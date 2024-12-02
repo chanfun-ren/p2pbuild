@@ -2,9 +2,9 @@ package service
 
 import (
 	"context"
+
 	"github.com/chanfun-ren/executor/api"
 	"github.com/chanfun-ren/executor/internal/network"
-	"github.com/chanfun-ren/executor/pkg/logging"
 )
 
 type DiscoveryService struct {
@@ -19,8 +19,6 @@ func NewDiscoveryService(netManager *network.NetManager) *DiscoveryService {
 }
 
 func (s *DiscoveryService) DiscoverPeers(ctx context.Context, req *api.DiscoverPeersRequest) (*api.DiscoverPeersResponse, error) {
-	logging.DefaultLogger().Infof("Received DiscoverPeers request")
-
 	peers := s.NetManager.PeerList()
 
 	response := &api.DiscoverPeersResponse{
