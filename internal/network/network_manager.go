@@ -112,7 +112,7 @@ func (nm *NetManager) PeerList() []Peer {
 }
 
 func NewNetManager(host host.Host) *NetManager {
-	peerstore := NewActivePeerStore()
+	activePeerStore := NewActivePeerStore()
 
 	// 自身上线, 将信息添加到 peerstore
 	selfID := host.ID()
@@ -121,11 +121,11 @@ func NewNetManager(host host.Host) *NetManager {
 	for i, addr := range selfAddrs {
 		addresses[i] = addr.String()
 	}
-	peerstore.Add(selfID, addresses)
+	activePeerStore.Add(selfID, addresses)
 
 	nm := &NetManager{
 		h:           host,
-		PeerManager: peerstore,
+		PeerManager: activePeerStore,
 	}
 
 	host.Network().Notify(nm)
