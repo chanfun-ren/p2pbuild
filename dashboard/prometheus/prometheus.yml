@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 1s  # 每1秒拉取一次数据
+
+scrape_configs:
+  - job_name: 'executor-metric-server'
+    metrics_path: /debug/metrics/prometheus
+    scheme: http
+    static_configs:
+      - targets: ['192.168.129.71:5001']  # metric server 的地址
