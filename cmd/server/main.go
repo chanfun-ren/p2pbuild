@@ -11,6 +11,7 @@ import (
 	"github.com/chanfun-ren/executor/api"
 	"github.com/chanfun-ren/executor/internal/network"
 	"github.com/chanfun-ren/executor/internal/service"
+	"github.com/chanfun-ren/executor/pkg/config"
 	"github.com/chanfun-ren/executor/pkg/interceptor"
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/chanfun-ren/executor/pkg/utils"
@@ -50,7 +51,7 @@ func main() {
 	api.RegisterShareBuildProxyServer(grpcServer, sharebuildService)
 	api.RegisterShareBuildExecutorServer(grpcServer, executroService)
 
-	address := ":50051"
+	address := fmt.Sprintf(":%d", config.GRPC_PORT)
 	lis, err := net.Listen("tcp", address)
 	if err != nil {
 		log.Fatalw("grpc server failed to bind addr", "address", address, "error", err)

@@ -44,7 +44,7 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ProjectRunner: %v", err)
 	}
-	log.Infow("new ProjectRunner for project", "project", project.String())
+	log.Debugw("new ProjectRunner for project", "project", project.String())
 
 	// 保存到映射
 	s.ProjectRunners.Store(project, ProjectRunner)

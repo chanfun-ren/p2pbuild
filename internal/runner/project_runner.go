@@ -42,7 +42,7 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) err
 	if err := os.MkdirAll(mountedRootDir, os.ModePerm); err != nil {
 		log.Fatalw("fail to create dir", "mountedRootDir", mountedRootDir, "err", err)
 	}
-	log.Infow("directory created successfully", "mountedRootDir", mountedRootDir)
+	log.Debugw("directory created successfully", "mountedRootDir", mountedRootDir)
 
 	// 执行挂载 NFS 操作
 	return utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)

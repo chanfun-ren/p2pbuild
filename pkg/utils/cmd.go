@@ -212,6 +212,7 @@ func RunACmd(ctx context.Context, content string, workDir string) *CommandResult
 		Stderr: &stderr,
 	}
 	_, cmdRes := Run(ctx, cmd, workDir, stdio, false)
+	log.Debugw("Run cmd done", "Cmd", cmd, "cmdRes", cmdRes)
 	return cmdRes
 }
 

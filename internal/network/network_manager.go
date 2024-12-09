@@ -96,12 +96,12 @@ func (nm *NetManager) HandlePeerFound(peer peer.AddrInfo) {
 	if peer.ID > nm.h.ID() {
 		// if other end peer id greater than us, don't connect to it, just wait for it to connect us
 		// log.Infow("Found peer which id is greater than us, wait for it to connect to us", "peer", peer, "action", "wait")
-		log.Infow("Found greater peer", "peer", peer, "action", "wait")
+		log.Debugw("Found greater peer", "peer", peer, "action", "wait")
 		return
 	}
 
 	// log.Infow("Found peer which id is less than us, connect to it", "peer", peer, "action", "connect")
-	log.Infow("Found smaller peer", "peer", peer, "action", "connect")
+	log.Debugw("Found smaller peer", "peer", peer, "action", "connect")
 	if err := nm.h.Connect(context.Background(), peer); err != nil {
 		log.Warnw("Failed to connect to peer", "peer", peer, "error", err)
 	}

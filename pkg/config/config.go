@@ -7,6 +7,11 @@ import (
 	"github.com/chanfun-ren/executor/pkg/logging"
 )
 
+const EXECUTOR_GROUP_SIZE = 3
+
+// TODO: 更优雅的方式 <- 配置文件导入
+const GRPC_PORT = 50051
+
 func GetExecutorHome() string {
 	username := os.Getenv("USER")
 	if username == "" {

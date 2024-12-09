@@ -28,14 +28,14 @@ func init() {
 
 func LogInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	log := logging.FromContext(ctx)
-	log.Infow("Received request", "method", info.FullMethod, "request", req)
+	log.Debugw("Received request", "method", info.FullMethod, "request", req)
 	start := time.Now()
 	resp, err := handler(ctx, req)
 	// TODO: 统一设计错误码
 	if err != nil {
 		log.Errorw("Failed to handle request", "method", info.FullMethod, "error", err)
 	}
-	log.Infow("Handled request", "method", info.FullMethod, "response", resp, "duration", time.Since(start))
+	log.Debugw("Handled request", "method", info.FullMethod, "response", resp, "duration", time.Since(start))
 	return resp, err
 }
 
