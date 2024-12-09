@@ -30,7 +30,8 @@ func main() {
 	}()
 
 	// create a new libp2p Host that listens on a random TCP port
-	addr := fmt.Sprintf("/ip4/%s/tcp/0", utils.GetOutboundIP())
+	ip := utils.GetOutboundIP().String()
+	addr := fmt.Sprintf("/ip4/%s/tcp/0", ip)
 	h, err := libp2p.New(libp2p.ListenAddrStrings(addr))
 	if err != nil {
 		log.Fatalw("Failed to create p2p host", "addr", addr, "error", err)
@@ -40,10 +41,14 @@ func main() {
 	// setup network manager, 维护网络中活跃的节点
 	nm := network.NewNetManager(h)
 
-	// 对外提供 DiscoveryService 接口
+	// 对外提供 DiscoveryService, ProxyService, ExecutorService API
 	discoveryService := service.NewDiscoveryService(nm)
+	sharebuildService := service.NewSharebuildProxyService(nm)
+	executroService := service.NewShareBuildExecutorService()
 	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptor.LogInterceptor, interceptor.MetricsInterceptor))
 	api.RegisterDiscoveryServer(grpcServer, discoveryService)
+	api.RegisterShareBuildProxyServer(grpcServer, sharebuildService)
+	api.RegisterShareBuildExecutorServer(grpcServer, executroService)
 
 	address := ":50051"
 	lis, err := net.Listen("tcp", address)
@@ -52,7 +57,7 @@ func main() {
 	}
 
 	go func() {
-		log.Info("starting grpc health server", "address", address)
+		log.Infow("starting grpc health server", "address", address)
 		if err := grpcServer.Serve(lis); err != nil {
 			log.Fatalw("failed to serve grpc service", "error", err)
 		}

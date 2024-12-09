@@ -2,19 +2,14 @@ syntax = "proto3";
 
 package api;
 
-option go_package = "./api"; 
+option go_package = "./api";
+
+import "common.proto";
 
 service Discovery {
-    rpc DiscoverPeers(DiscoverPeersRequest) returns (DiscoverPeersResponse);
+  rpc DiscoverPeers(DiscoverPeersRequest) returns (DiscoverPeersResponse);
 }
 
 message DiscoverPeersRequest {}
 
-message DiscoverPeersResponse {
-    repeated Peer peers = 1;
-}
-
-message Peer {
-    string id = 1;
-    repeated string addresses = 2;
-}
+message DiscoverPeersResponse { repeated Peer peers = 1; }

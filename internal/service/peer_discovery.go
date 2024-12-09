@@ -5,6 +5,7 @@ import (
 
 	"github.com/chanfun-ren/executor/api"
 	"github.com/chanfun-ren/executor/internal/network"
+	"github.com/chanfun-ren/executor/pkg/utils"
 )
 
 type DiscoveryService struct {
@@ -26,9 +27,11 @@ func (s *DiscoveryService) DiscoverPeers(ctx context.Context, req *api.DiscoverP
 	}
 
 	for i, p := range peers {
+		ip, port, _ := utils.MaddrToHostPort(p.Addresses[0])
 		response.Peers[i] = &api.Peer{
-			Id:        p.ID,
-			Addresses: p.Addresses,
+			Id:   p.ID,
+			Ip:   ip,
+			Port: port,
 		}
 	}
 
