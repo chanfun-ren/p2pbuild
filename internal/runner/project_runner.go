@@ -86,7 +86,7 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 		if err := utils.PullImageIfNecessary(bgCtx, image); err != nil {
 			log.Errorw("Failed to pull image in background", "image", image, "error", err)
 		} else {
-			log.Infow("Image pulled successfully in background", "image", image)
+			log.Infow("Image is ready in background", "image", image)
 		}
 	}(c.containerImage)
 

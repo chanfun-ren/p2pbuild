@@ -62,17 +62,17 @@ func PullImageIfNecessary(ctx context.Context, imageAddr string) error {
 		return nil
 	}
 
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("error creating Docker client: %w", err)
+	}
+
 	// 标准化镜像地址
 	normalizedImage, err := normalizeImage(imageAddr)
 	if err != nil {
 		return fmt.Errorf("failed to normalize image address: %w", err)
 	}
 	log.Debugw("Normalized image address", "normalizedImage", normalizedImage.String())
-
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return fmt.Errorf("error creating Docker client: %w", err)
-	}
 
 	// 检查镜像是否已经存在
 	images, err := cli.ImageList(ctx, image.ListOptions{})
@@ -89,7 +89,7 @@ func PullImageIfNecessary(ctx context.Context, imageAddr string) error {
 			}
 			// 对比标准化的 Named 类型
 			if reference.FamiliarString(localRef) == reference.FamiliarString(normalizedImage) {
-				log.Infow("Image already exists, skipping pull", "image", normalizedImage.String())
+				log.Infow("Image already exists, skipping pull", "normalizedImage.String()", normalizedImage.String())
 				return nil
 			}
 		}
@@ -108,7 +108,7 @@ func PullImageIfNecessary(ctx context.Context, imageAddr string) error {
 		return fmt.Errorf("error reading image pull output: %w", err)
 	}
 
-	log.Infow("Image pulled successfully", "image_addr", normalizedImage.String())
+	log.Infow("Image pulled successfully", "normalizedImage.String()", normalizedImage.String())
 	return nil
 }
 
