@@ -73,13 +73,26 @@ func NewContainerProjectRunner(image string) *ContainerProjectRunner {
 func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
 	log.Infow("Preparing container environment for project", "project", req.String())
 
+	// 1. 挂载项目
 	err := mountNinjaProject(ctx, req)
 	if err != nil {
 		log.Errorw("Failed to mount project", "req", req, "error", err)
 		return err
 	}
 
-	return utils.PullImageIfNecessary(ctx, c.containerImage)
+	// 2. 后台拉取镜像
+	go func(image string) {
+		bgCtx := context.Background() // 独立上下文，不会受请求的 ctx 限制
+		if err := utils.PullImageIfNecessary(bgCtx, image); err != nil {
+			log.Errorw("Failed to pull image in background", "image", image, "error", err)
+		} else {
+			log.Infow("Image pulled successfully in background", "image", image)
+		}
+	}(c.containerImage)
+
+	// 3. 提前返回，拉取任务在后台进行
+	return nil
+
 }
 
 func (c *ContainerProjectRunner) RunTask(command string) (string, error) {
