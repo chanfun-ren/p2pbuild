@@ -42,13 +42,13 @@ func (s *SharebuildProxyService) InitializeBuildEnv(ctx context.Context, req *ap
 	if err != nil {
 		return nil, err
 	}
-	s.projectToExecutors.Store(req.Project, executors)
 
 	// 2. 通知每个 executor 准备环境
 	ready_executors, err := s.prepareEnvironments(executors, req)
 	if err != nil {
 		return nil, err
 	}
+	s.projectToExecutors.Store(req.Project, ready_executors)
 
 	// 3. 返回成功信息
 	return &api.InitializeBuildEnvResponse{
