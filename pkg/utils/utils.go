@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/distribution/reference"
@@ -124,4 +125,14 @@ func normalizeImage(imageAddr string) (reference.NamedTagged, error) {
 	}
 	// 否则添加默认 tag :latest
 	return reference.WithTag(parsedRef, "latest")
+}
+
+// 将 sync.Map 转换为调试友好的格式
+func MapToString(m *sync.Map) string {
+	var result []string
+	m.Range(func(key, value any) bool {
+		result = append(result, fmt.Sprintf("%v: %v", key, value))
+		return true
+	})
+	return strings.Join(result, ", ")
 }

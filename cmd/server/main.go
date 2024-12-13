@@ -12,8 +12,10 @@ import (
 	"github.com/chanfun-ren/executor/internal/network"
 	"github.com/chanfun-ren/executor/internal/service"
 	"github.com/chanfun-ren/executor/pkg/config"
+
 	"github.com/chanfun-ren/executor/pkg/interceptor"
 	"github.com/chanfun-ren/executor/pkg/logging"
+	"github.com/chanfun-ren/executor/pkg/store"
 	"github.com/chanfun-ren/executor/pkg/utils"
 	"github.com/libp2p/go-libp2p"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -43,8 +45,9 @@ func main() {
 	nm := network.NewNetManager(h)
 
 	// 对外提供 DiscoveryService, ProxyService, ExecutorService API
+	redisCli := store.NewStoreClient("redis")
 	discoveryService := service.NewDiscoveryService(nm)
-	sharebuildService := service.NewSharebuildProxyService(nm)
+	sharebuildService := service.NewSharebuildProxyService(nm, redisCli)
 	executroService := service.NewShareBuildExecutorService()
 	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptor.LogInterceptor, interceptor.MetricsInterceptor))
 	api.RegisterDiscoveryServer(grpcServer, discoveryService)
