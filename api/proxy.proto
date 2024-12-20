@@ -21,9 +21,8 @@ message InitializeBuildEnvRequest {
   string container_image = 2; // ninja2 指定的项目运行的镜像地址
 }
 
-// TODO: status 整体设计
 message InitializeBuildEnvResponse {
-  string status = 1;
+  Status status = 1;
   repeated Peer peers = 2;
 }
 
@@ -34,13 +33,11 @@ message ForwardAndExecuteRequest {
 }
 
 message ForwardAndExecuteResponse {
-  string status = 1; // 返回成功信号
+  Status status = 1; // 返回成功信号
   string id = 2;     // 任务id
   Peer executor = 3; // 任务是在哪个executor执行完成的
-  int32 nFail = 4; // 失败了几次（NFS可能导致文件系统忙，有时候需要重试）
-
-  string std_out = 5; // 命令执行标准输出
-  string std_err = 6; // 命令执行标准错误
+  string std_out = 4; // 命令执行标准输出
+  string std_err = 5; // 命令执行标准错误
 }
 
 message ClearBuildEnvRequest { Project project = 1; }

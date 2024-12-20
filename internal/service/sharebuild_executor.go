@@ -39,6 +39,9 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 	log := logging.NewComponentLogger("executor")
 
 	project := req.Project
+	if project == nil {
+		return NewPLEResponse(api.RC_EXECUTOR_INVALID_ARGUMENT, "invalid arguments: `project` is missing"), nil
+	}
 	redisConfig := store.KVStoreConfig{
 		Type: "redis",
 		Host: project.NinjaHost,
@@ -47,13 +50,14 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 	redisCli, err := store.GetKVStoreFactory().CreateKVStoreClient(redisConfig)
 	if err != nil {
 		log.Errorw("failed to create KVStoreClient", "redisConfig", redisConfig, "err", err)
-		return nil, fmt.Errorf("failed to create KVStoreClient: %v", err)
+		return NewPLEResponse(api.RC_EXECUTOR_RESOURCE_CREATION_FAILED, "failed to create KVStoreClient"), nil
 	}
 
 	// 始终创建新的 ProjectRunner, 用户可能更新 containerImage
 	ProjectRunner, err := runner.NewScheduledProjectRunner(req.ContainerImage, redisCli, config.POOLSIZE)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ProjectRunner: %v", err)
+		log.Errorw("failed to create ProjectRunner", "containerImage", req.ContainerImage, "err", err)
+		return NewPLEResponse(api.RC_EXECUTOR_RUNNER_CREATION_FAILED, "failed to create ProjectRunner"), nil
 	}
 	log.Debugw("new ProjectRunner for project", "project", project.String())
 
@@ -62,48 +66,52 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 
 	// 准备环境
 	if err := ProjectRunner.PrepareEnvironment(ctx, req); err != nil {
-		return nil, fmt.Errorf("failed to prepare environment: %v", err)
+		log.Errorw("failed to prepare environment", "project", project.String(), "err", err)
+		return NewPLEResponse(api.RC_EXECUTOR_ENV_PREPARE_FAILED, "failed to prepare environment"), nil
 	}
 
-	return &api.PrepareLocalEnvResponse{
-		Status: "Environment initialized successfully",
-	}, nil
+	log.Infow("Environment initialized successfully", "project", project.String())
+	return NewPLEResponse(api.RC_EXECUTOR_OK, "Environment initialized successfully"), nil
+
 }
 
 func (s *ShareBuildExecutorService) SubmitAndExecute(ctx context.Context, req *api.SubmitAndExecuteRequest) (*api.SubmitAndExecuteResponse, error) {
 	log := logging.NewComponentLogger("executor")
+	executorId := s.Host.ID().ShortString()
+
 	projectRunner, ok := s.getProjectRunner(req.Project)
 	if !ok {
-		return nil, fmt.Errorf("project runner not found")
+		return NewSAEResponse(api.RC_EXECUTOR_RESOURCE_NOT_FOUND, "project runner not found", req.CmdId, "", ""), nil
 	}
 	taskRunner, ok := projectRunner.(*runner.TaskBufferedRunner)
 	if !ok {
-		return nil, fmt.Errorf("invalid project runner type")
+		return NewSAEResponse(api.RC_EXECUTOR_INVALID_ARGUMENT, "invalid project runner type", req.CmdId, "", ""), nil
 	}
 
 	cmdKey := common.GenCmdKey(req.Project, req.CmdId)
 	log.Infow("SubmitAndExecute", "cmdKey", cmdKey)
-	executorId := s.Host.ID().ShortString()
 
 	result, err := taskRunner.TryClaimTask(ctx, cmdKey, executorId)
 	log.Debugw("TryClaimTask", "result", result, "err", err)
 	if err != nil {
-		return nil, fmt.Errorf("failed to claim command: %w", err)
+		return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to claim task: %v", err), req.CmdId, "", ""), nil
 	}
 
 	// 根据状态码处理逻辑
 	switch result.Code {
 	case -1: // 任务不存在
-		return &api.SubmitAndExecuteResponse{
-			Status: "task not found",
-		}, nil
-
+		return NewSAEResponse(api.RC_EXECUTOR_RESOURCE_NOT_FOUND, "task not found", req.CmdId, "", ""), nil
+	case 1: // 任务状态不匹配
+		return NewSAEResponse(api.RC_EXECUTOR_TASK_ALREADY_CLAIMED, "task already claimed by others", req.CmdId, "", ""), nil
+	case 2: // 参数错误
+		return NewSAEResponse(api.RC_EXECUTOR_INVALID_ARGUMENT, "invalid arguments", req.CmdId, "", ""), nil
 	case 0: // 成功 claimed
 		// 执行命令，这里可以启动一个后台 goroutine 或者直接执行任务
 		content, err := taskRunner.KVStore.HGet(ctx, cmdKey, "content")
 		if err != nil {
-			return nil, fmt.Errorf("failed to get command content: %w", err)
+			return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to get command content: %v", err), req.CmdId, "", ""), nil
 		}
+
 		resultChan := make(chan model.TaskResult, 1)
 		task := model.Task{
 			CmdKey:     cmdKey,
@@ -112,40 +120,42 @@ func (s *ShareBuildExecutorService) SubmitAndExecute(ctx context.Context, req *a
 		}
 		taskRes, err := taskRunner.SubmitAndWaitTaskRes(ctx, &task, executorId)
 		if err != nil {
-			return nil, fmt.Errorf("failed to execute task: %w", err)
+			// fallback
+			taskRunner.UnclaimeTask(ctx, cmdKey, executorId)
+			return NewSAEResponse(api.RC_EXECUTOR_TASK_FAILED, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, "", ""), nil
 		}
+
+		// 任务执行成功：更新任务状态为完成
+		luaRes, _ := taskRunner.TryFinishTask(ctx, task.CmdKey, executorId)
+		if luaRes.Code != 0 {
+			return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, "failed to finish task", req.CmdId, "", ""), nil
+		}
+
 		log.Debugw("task done", "taskRes", taskRes)
+		return NewSAEResponse(api.RC_EXECUTOR_OK, "task executed successfully", req.CmdId, taskRes.StdOut, taskRes.StdErr), nil
 
-		return &api.SubmitAndExecuteResponse{
-			Id:     req.CmdId,
-			Status: "task done ok",
-			StdOut: taskRes.StdOut,
-			StdErr: taskRes.StdErr,
-		}, nil
-
-	case 1: // 任务状态不匹配
-		return &api.SubmitAndExecuteResponse{
-			Id:     req.CmdId,
-			Status: "task already claimed by others",
-		}, nil
-	case 2: // 参数错误
-		return &api.SubmitAndExecuteResponse{
-			Id:     req.CmdId,
-			Status: "invalid arguments",
-		}, nil
-	default:
-		return &api.SubmitAndExecuteResponse{
-			Id:     req.CmdId,
-			Status: "unexpected result code",
-		}, nil
+	default: // 非预期结果
+		return NewSAEResponse(api.RC_EXECUTOR_UNEXPECTED_RESULT, "unexpected result code", req.CmdId, "", ""), nil
 	}
 }
 
-// enum Status {
-//     SUCCESS = 0;
-//     NOT_FOUND = 1;
-//     ALREADY_CLAIMED = 2;
-//     ALREADY_DONE = 3;
-//     FAILED = 4;
-//     QUEUE_FULL = 5;
-//   }
+func NewSAEResponse(statusCode api.RC, statusMessage, id, stdOut, stdErr string) *api.SubmitAndExecuteResponse {
+	return &api.SubmitAndExecuteResponse{
+		Status: &api.Status{
+			Code:    statusCode,
+			Message: statusMessage,
+		},
+		Id:     id,
+		StdOut: stdOut,
+		StdErr: stdErr,
+	}
+}
+
+func NewPLEResponse(statusCode api.RC, statusMessage string) *api.PrepareLocalEnvResponse {
+	return &api.PrepareLocalEnvResponse{
+		Status: &api.Status{
+			Code:    statusCode,
+			Message: statusMessage,
+		},
+	}
+}

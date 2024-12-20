@@ -44,21 +44,21 @@ func (s *SharebuildProxyService) InitializeBuildEnv(ctx context.Context, req *ap
 	// 1. 从活跃的节点中选取一批作为待编译项目的 executor
 	executors, err := s.pickActiveExecutors()
 	if err != nil {
-		return nil, err
+		log.Errorw("failed to pick active executors", "err", err)
+		return NewIBEResponse(api.RC_PROXY_INTERNAL_ERROR, "Failed to pick active executors", nil), nil
 	}
 
 	// 2. 通知每个 executor 准备环境
 	ready_executors, err := s.prepareEnvironments(executors, req)
 	if err != nil {
-		return nil, err
+		log.Errorw("failed to prepare environments", "executors", executors, "err", err)
+		return NewIBEResponse(api.RC_PROXY_INTERNAL_ERROR, "Failed to prepare environments", nil), nil
+
 	}
 	s.projectToExecutors.Store(common.GenProjectKey(req.Project), ready_executors)
 
 	// 3. 返回成功信息
-	return &api.InitializeBuildEnvResponse{
-		Status: "InitializeBuildEnv OK",
-		Peers:  ready_executors,
-	}, nil
+	return NewIBEResponse(api.RC_PROXY_OK, "Environment prepared successfully", ready_executors), nil
 }
 
 // 获取活跃的 executors
@@ -144,48 +144,53 @@ func (s *SharebuildProxyService) prepareEnvironments(executors []*api.Peer, req 
 	return ready_executors, nil
 }
 
+type ExecutorResult struct {
+	Executor *api.Peer
+	Response *api.SubmitAndExecuteResponse
+}
+
 func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api.ForwardAndExecuteRequest) (*api.ForwardAndExecuteResponse, error) {
 	// Key: project:<cmd_id>
 	// Fields:
 	// - status: "unclaimed", "claimed", "done"
 	// - content: Actual command content
-	// - executor_id: ID of the executor currently processing the command
 	// 1. 将命令存储到公共存储组件
 	key := common.GenCmdKey(req.Project, req.CmdId)
-	// cmdContent := req.CmdContent
+	cmdContent := req.CmdContent
 
 	fields := map[string]interface{}{
 		"status":  "unclaimed",
-		"content": "echo 'hello world'",
+		"content": cmdContent,
 	}
 	err := s.kvStoreClient.HSetWithTTL(ctx, key, fields, config.CMDTTL)
 	if err != nil {
 		log.Errorw("Failed to store command", "key", key, "fields", fields, "err", err)
+		return NewFAEResponse(api.RC_PROXY_KVSTORE_FAILED, "Failed to store command"), nil
 	}
 
 	log.Debugw("Command stored in KV store", "key", key, "fields", fields)
 
 	// 2. 获取 project 对应的 executors
-	log.Debugw("ForwardAndExecute projectToExecutors", "content", utils.MapToString(&s.projectToExecutors))
+	log.Debugw("ForwardAndExecute projectToExecutors", "projectToExecutors", utils.MapToString(&s.projectToExecutors))
 	res, ok := s.projectToExecutors.Load(common.GenProjectKey(req.Project))
 	if !ok {
-		return nil, fmt.Errorf("no executors found for project %v", req.Project)
+		return NewFAEResponse(api.RC_PROXY_NO_AVAILABLE_EXECUTOR, "No executor found for project"), nil
 	}
 	executors, ok := res.([]*api.Peer)
 	if !ok {
-		return nil, fmt.Errorf("invalid type for executors: expected []*api.Peer, got %T", executors)
+		return NewFAEResponse(api.RC_PROXY_INTERNAL_ERROR, fmt.Sprintf("Invalid type for executors: expected []*api.Peer, got %T", executors)), nil
 	}
 
 	// 3. 发起 SubmitAndExecute 调用
 	// 获取或创建 gRPC 连接
 	conns, err := s.getOrCreateGrpcConnsForProject(req.Project, executors)
 	if err != nil {
-		return nil, err
+		return NewFAEResponse(api.RC_PROXY_INTERNAL_ERROR, fmt.Sprintf("Failed to create gRPC connections: %v", err)), nil
 	}
 
 	// 用于并发执行的 wait group 和结果通道
 	var wg sync.WaitGroup
-	resultChan := make(chan *api.ForwardAndExecuteResponse, len(conns))
+	resultChan := make(chan *ExecutorResult, len(executors))
 
 	// 并发地向每个 executor 发起请求
 	for i, conn := range conns {
@@ -196,23 +201,20 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 			client := api.NewShareBuildExecutorClient(conn)
 
 			// 调用 SubmitAndExecute 方法
-			_, err := client.SubmitAndExecute(context.Background(), &api.SubmitAndExecuteRequest{
+			res, err := client.SubmitAndExecute(context.Background(), &api.SubmitAndExecuteRequest{
 				Project: req.Project,
 				CmdId:   req.CmdId,
 			})
 
 			// 根据结果返回状态到 resultChan
 			if err != nil {
-				log.Errorw("Failed to execute command on executor", "executor", executors[i].String(), "err", err)
-				resultChan <- &api.ForwardAndExecuteResponse{
-					Status:   "Failed to execute command",
-					Executor: executors[i], // 返回执行失败的 executor
-				}
+				log.Errorw("Failed to foward command on executor", "executor", executors[i].String(), "err", err)
+				resultChan <- nil // proxy foward 内部错误
 			} else {
-				log.Infow("Successfully submitted command to executor", "executor", executors[i].String())
-				resultChan <- &api.ForwardAndExecuteResponse{
-					Status:   "Command executed successfully",
-					Executor: executors[i], // 返回执行成功的 executor
+				log.Infow("Successfully FowardedAndExecute command to executor", "executor", executors[i].String())
+				resultChan <- &ExecutorResult{
+					Executor: executors[i], // 返回 foward 成功的 executor
+					Response: res,          // 返回实际的执行结果
 				}
 			}
 		}(i, conn)
@@ -222,29 +224,63 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 	wg.Wait()
 	close(resultChan)
 
-	// 从结果通道收集返回值，检查执行结果
-	// TODO: 设计状态码检查状态
-	var successfulExecutors []*api.Peer
-	var failedExecutors []*api.Peer
+	var successfulExecutor *api.Peer
+	var finalStatus *api.Status
+	var stdOut, stdErr string
+	var allFailed bool = true
+
+	// 处理所有 executor 的执行结果
 	for result := range resultChan {
-		if result.Status == "Command executed successfully" {
-			successfulExecutors = append(successfulExecutors, result.Executor)
-		} else {
-			failedExecutors = append(failedExecutors, result.Executor)
+		if result.Response.Status.Code == api.RC_EXECUTOR_OK {
+			successfulExecutor = result.Executor
+			stdOut = result.Response.StdOut
+			stdErr = result.Response.StdErr
+			finalStatus = &api.Status{
+				Code:    api.RC_PROXY_OK,
+				Message: "Task executed successfully",
+			}
+			allFailed = false
+			break
 		}
 	}
 
-	// 返回状态
-	if len(successfulExecutors) > 0 {
-		return &api.ForwardAndExecuteResponse{
-			Status:   "Command executed successfully",
-			Executor: successfulExecutors[0], // 取第一个成功的 executor
-		}, nil
-	} else {
-		return &api.ForwardAndExecuteResponse{
-			Status:   "Failed to execute command on any executor",
-			Executor: failedExecutors[0],
-		}, nil
+	if allFailed {
+		// 所有 executor 执行失败，返回失败状态
+		finalStatus = &api.Status{
+			Code:    api.RC_PROXY_ALL_EXECUTOR_FAILED,
+			Message: "Failed to execute task on all executors",
+		}
 	}
 
+	return NewFAEResponseWithExecutor(finalStatus, successfulExecutor, req.CmdId, stdOut, stdErr), nil
+
+}
+
+func NewIBEResponse(code api.RC, message string, peers []*api.Peer) *api.InitializeBuildEnvResponse {
+	return &api.InitializeBuildEnvResponse{
+		Status: &api.Status{
+			Code:    code,
+			Message: message,
+		},
+		Peers: peers,
+	}
+}
+
+func NewFAEResponse(code api.RC, message string) *api.ForwardAndExecuteResponse {
+	return &api.ForwardAndExecuteResponse{
+		Status: &api.Status{
+			Code:    code,
+			Message: message,
+		},
+	}
+}
+
+func NewFAEResponseWithExecutor(status *api.Status, executor *api.Peer, cmdId, stdOut, stdErr string) *api.ForwardAndExecuteResponse {
+	return &api.ForwardAndExecuteResponse{
+		Status:   status,
+		Executor: executor,
+		Id:       cmdId,
+		StdOut:   stdOut,
+		StdErr:   stdErr,
+	}
 }

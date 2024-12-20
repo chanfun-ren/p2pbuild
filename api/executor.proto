@@ -24,7 +24,9 @@ message PrepareLocalEnvRequest {
   string container_image = 2;
 }
 
-message PrepareLocalEnvResponse { string status = 1; }
+message PrepareLocalEnvResponse {
+  Status status = 1;
+}
 
 message SubmitAndExecuteRequest {
   Project project = 1; // cmd 所属项目信息
@@ -32,15 +34,10 @@ message SubmitAndExecuteRequest {
 }
 
 message SubmitAndExecuteResponse {
-  // TODO: -> {code, msg}
-  string status = 1; // 返回成功信号 
+  Status status = 1; // 返回码信息
   string id = 2;     // 任务id
-  // TODO: 删除 executor 字段
-  Peer executor = 3; // 任务是在哪个executor执行完成的 
-  int32 nFail = 4; // 失败了几次 NFS可能导致文件系统忙，有时候需要重试
-
-  string std_out = 5; // 命令执行标准输出
-  string std_err = 6; // 命令执行标准错误
+  string std_out = 3; // 命令执行标准输出
+  string std_err = 4; // 命令执行标准错误
 }
 
 message CleanupLocalEnvRequest { Project project = 1; }

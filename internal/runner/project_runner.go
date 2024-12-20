@@ -3,6 +3,7 @@ package runner
 // TODO: 拆分 runner 基础功能和调度功能
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -20,8 +21,8 @@ import (
 
 type ProjectRunner interface {
 	PrepareEnvironment(ctx context.Context, request *api.PrepareLocalEnvRequest) error
-	RunTask(cmdContent string) model.TaskResult // 执行编译任务
-	Cleanup() error                             // 清理资源
+	RunTask(task model.Task) model.TaskResult // 执行编译任务
+	Cleanup() error                           // 清理资源
 }
 
 // NewProjectRunner 根据传入的 containerImage 创建相应的 ProjectRunner
@@ -35,7 +36,7 @@ func NewScheduledProjectRunner(containerImage string, kvStoreClient store.KVStor
 var log = logging.DefaultLogger()
 
 type LocalProjectRunner struct {
-	// TODO: workdir
+	workDir string
 }
 
 func NewLocalProjectRunner() *LocalProjectRunner {
@@ -44,6 +45,7 @@ func NewLocalProjectRunner() *LocalProjectRunner {
 
 func (l *LocalProjectRunner) PrepareEnvironment(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
 	log.Infow("Preparing local environment for project", "project", req.String())
+	l.workDir = req.Project.NinjaDir
 	return mountNinjaProject(ctx, req)
 }
 
@@ -65,10 +67,41 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) err
 	return utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
 }
 
-func (l *LocalProjectRunner) RunTask(task string) model.TaskResult {
-	log.Debugw("Executing local task", "task", task)
-	// 实际执行任务逻辑
-	return model.TaskResult{}
+func (l *LocalProjectRunner) RunTask(task model.Task) model.TaskResult {
+	log.Debugw("Executing local task", "task cmd", task.Command)
+	// 本地执行任务
+	workDir := l.workDir
+	cmd := &utils.Command{
+		Content:     task.Command,
+		Env:         make([]string, 0),
+		Use_console: false,
+	}
+
+	var stdout, stderr bytes.Buffer
+	stdio := &utils.Stdio{
+		Stdin:  nil,
+		Stdout: &stdout,
+		Stderr: &stderr,
+	}
+	nBusy, cmdRes := utils.Run(context.Background(), cmd, workDir, stdio, true)
+	statusStr := "ok"
+
+	// TODO: 重构 utils.Run 把命令的输出和错误信息返回
+	var err error
+	if nBusy != 0 {
+		log.Errorw("Failed to run command", "cmd", cmd, "result", cmdRes)
+		err = errors.New("command failed")
+	}
+
+	res := model.TaskResult{
+		CmdKey: task.CmdKey,
+		StdOut: stdout.String(),
+		StdErr: stderr.String(),
+		Err:    err,
+		Status: statusStr,
+	}
+
+	return res
 }
 
 func (l *LocalProjectRunner) Cleanup() error {
@@ -112,8 +145,8 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 
 }
 
-func (c *ContainerProjectRunner) RunTask(cmdContent string) model.TaskResult {
-	log.Debugw("Executing local task", "cmdContent", cmdContent)
+func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
+	log.Debugw("Executing local task", "cmdContent", task.Command)
 	// 容器内执行任务
 	return model.TaskResult{}
 }
@@ -169,9 +202,9 @@ func (r *TaskBufferedRunner) PrepareEnvironment(ctx context.Context, request *ap
 	return r.baseRunner.PrepareEnvironment(ctx, request)
 }
 
-func (r *TaskBufferedRunner) RunTask(cmdContent string) model.TaskResult {
+func (r *TaskBufferedRunner) RunTask(task model.Task) model.TaskResult {
 	// r.submitCommand(common.GenCmdKey(req.Project, req.CmdId))
-	return r.baseRunner.RunTask(cmdContent)
+	return r.baseRunner.RunTask(task)
 }
 
 func (r *TaskBufferedRunner) Cleanup() error {
@@ -203,8 +236,7 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 			return
 		case task := <-r.LocalQueue:
 			// 执行任务
-			// TODO: RunTask(cmd)
-			taskRes := r.baseRunner.RunTask(task.Command)
+			taskRes := r.baseRunner.RunTask(task)
 			// 发送结果
 			task.ResultChan <- taskRes
 			close(task.ResultChan)
@@ -232,6 +264,10 @@ func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, cmdKey, operator 
 	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
 }
 
+func (r *TaskBufferedRunner) UnclaimeTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
+	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Claimed, model.Unclaimed, operator, config.TASKTTL)
+}
+
 func (r *TaskBufferedRunner) TryFinishTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
 	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Claimed, model.Done, operator, config.TASKTTL)
 }
@@ -245,11 +281,6 @@ func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *mod
 		case result := <-task.ResultChan:
 			if result.Err != nil {
 				return model.TaskResult{}, result.Err
-			}
-			// 更新任务状态为完成
-			luaRes, _ := r.TryFinishTask(ctx, task.CmdKey, operator)
-			if luaRes.Code != 0 {
-				return model.TaskResult{}, errors.New("failed to finish task")
 			}
 			return result, nil
 		case <-ctx.Done():
