@@ -13,23 +13,39 @@ import (
 	"github.com/chanfun-ren/executor/internal/service"
 	"github.com/chanfun-ren/executor/pkg/config"
 
+	"github.com/chanfun-ren/executor/internal/store"
 	"github.com/chanfun-ren/executor/pkg/interceptor"
 	"github.com/chanfun-ren/executor/pkg/logging"
-	"github.com/chanfun-ren/executor/pkg/store"
 	"github.com/chanfun-ren/executor/pkg/utils"
 	"github.com/libp2p/go-libp2p"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 )
 
+func initDefaultRedisCli() store.KVStoreClient {
+	redisConfig := store.KVStoreConfig{
+		Type: "redis",
+		Host: "localhost",
+		Port: config.STORE_PORT,
+	}
+	redisCli, err := store.GetKVStoreFactory().CreateKVStoreClient(redisConfig)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to create redis client: %v, config: %v", err, redisConfig))
+
+	}
+	return redisCli
+}
+
 func main() {
-	log := logging.DefaultLogger()
+	log := logging.NewComponentLogger("main_server")
 
 	// metrics
 	go func() {
 		http.Handle("/debug/metrics/prometheus", promhttp.Handler())
-		log.Infoln("Starting metrics server: http://localhost:5001/debug/metrics/prometheus")
-		log.Fatal(http.ListenAndServe(":5001", nil))
+		log.Info("Starting metrics server: http://localhost:5001/debug/metrics/prometheus")
+		if err := http.ListenAndServe(":5001", nil); err != nil {
+			log.Errorw("metrics server failed", "error", err)
+		}
 	}()
 
 	// create a new libp2p Host that listens on a random TCP port
@@ -45,10 +61,10 @@ func main() {
 	nm := network.NewNetManager(h)
 
 	// 对外提供 DiscoveryService, ProxyService, ExecutorService API
-	redisCli := store.NewStoreClient("redis")
+	redisCli := initDefaultRedisCli()
 	discoveryService := service.NewDiscoveryService(nm)
 	sharebuildService := service.NewSharebuildProxyService(nm, redisCli)
-	executroService := service.NewShareBuildExecutorService()
+	executroService := service.NewShareBuildExecutorService(h)
 	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptor.LogInterceptor, interceptor.MetricsInterceptor))
 	api.RegisterDiscoveryServer(grpcServer, discoveryService)
 	api.RegisterShareBuildProxyServer(grpcServer, sharebuildService)
@@ -70,16 +86,24 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	<-stop
-	log.Infoln("Shutting down...")
+	done := make(chan bool, 1)
+	go func() {
+		<-stop
+		log.Info("Shutting down...")
 
-	// close grpc server, close peer connections
-	log.Infoln("Closing grpc server")
-	grpcServer.GracefulStop()
-	log.Infoln("Closing host")
-	if err := h.Close(); err != nil {
-		log.Warnw("Failed to close host", "error", err)
-	} else {
-		log.Info("Host closed")
-	}
+		log.Info("Closing grpc server")
+		grpcServer.GracefulStop()
+
+		log.Info("Closing host")
+		if err := h.Close(); err != nil {
+			log.Warnw("Failed to close host", "error", err)
+		} else {
+			log.Info("Host closed")
+		}
+
+		done <- true
+	}()
+
+	<-done
+	log.Info("Server stopped")
 }

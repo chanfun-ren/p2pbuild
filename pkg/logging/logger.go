@@ -94,6 +94,9 @@ const (
 
 	encodingConsole = "console"
 	encodingJSON    = "json"
+
+	componentKey = "component"
+	requestIDKey = "request_id"
 )
 
 var outputStderr = []string{"stderr"}
@@ -122,7 +125,7 @@ var developmentEncoderConfig = zapcore.EncoderConfig{
 	StacktraceKey:  "S",
 	LineEnding:     zapcore.DefaultLineEnding,
 	EncodeLevel:    zapcore.CapitalColorLevelEncoder,
-	EncodeTime:     zapcore.RFC3339TimeEncoder,
+	EncodeTime:     zapcore.TimeEncoderOfLayout("2006-01-02T15:04:05"),
 	EncodeDuration: zapcore.StringDurationEncoder,
 	EncodeCaller:   zapcore.ShortCallerEncoder,
 }
@@ -142,4 +145,12 @@ func parseLevel(s string) zapcore.Level {
 	default:
 		return zapcore.InfoLevel // 默认级别
 	}
+}
+
+func NewComponentLogger(component string) *zap.SugaredLogger {
+	return DefaultLogger().With(zap.String(componentKey, component))
+}
+
+func WithRequestID(logger *zap.SugaredLogger, requestID string) *zap.SugaredLogger {
+	return logger.With("request_id", requestID)
 }

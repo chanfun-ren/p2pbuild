@@ -1,25 +1,41 @@
 package runner
 
+// TODO: 拆分 runner 基础功能和调度功能
+
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/chanfun-ren/executor/api"
+	"github.com/chanfun-ren/executor/internal/model"
+	"github.com/chanfun-ren/executor/internal/store"
+	"github.com/chanfun-ren/executor/pkg/config"
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/chanfun-ren/executor/pkg/utils"
 )
 
 type ProjectRunner interface {
 	PrepareEnvironment(ctx context.Context, request *api.PrepareLocalEnvRequest) error
-	RunTask(command string) (string, error) // 执行编译任务
-	Cleanup() error                         // 清理资源
+	RunTask(cmdContent string) model.TaskResult // 执行编译任务
+	Cleanup() error                             // 清理资源
+}
+
+// NewProjectRunner 根据传入的 containerImage 创建相应的 ProjectRunner
+func NewScheduledProjectRunner(containerImage string, kvStoreClient store.KVStoreClient, workerCount int) (ProjectRunner, error) {
+	if containerImage == "" {
+		return NewTaskBufferedRunner(NewLocalProjectRunner(), kvStoreClient, workerCount)
+	}
+	return NewTaskBufferedRunner(NewContainerProjectRunner(containerImage), kvStoreClient, workerCount)
 }
 
 var log = logging.DefaultLogger()
 
 type LocalProjectRunner struct {
+	// TODO: workdir
 }
 
 func NewLocalProjectRunner() *LocalProjectRunner {
@@ -37,6 +53,7 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) err
 	ninjaHost := project.GetNinjaHost()
 	rootDir := strings.TrimSuffix(project.GetRootDir(), "/") //把结尾的斜杠去掉，方便后面字符串替换
 
+	log.Debugw("Mounting ninja project", "ninjaHost", ninjaHost)
 	// 生成挂载点目录, 若目录不存在则递归创建
 	mountedRootDir := utils.GenMountedRootDir(ninjaHost, rootDir)
 	if err := os.MkdirAll(mountedRootDir, os.ModePerm); err != nil {
@@ -48,10 +65,10 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) err
 	return utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
 }
 
-func (l *LocalProjectRunner) RunTask(command string) (string, error) {
-	fmt.Printf("Executing local task: %s\n", command)
+func (l *LocalProjectRunner) RunTask(task string) model.TaskResult {
+	log.Debugw("Executing local task", "task", task)
 	// 实际执行任务逻辑
-	return "Build successful", nil
+	return model.TaskResult{}
 }
 
 func (l *LocalProjectRunner) Cleanup() error {
@@ -95,13 +112,151 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 
 }
 
-func (c *ContainerProjectRunner) RunTask(command string) (string, error) {
-	fmt.Printf("Executing task in container %s: %s\n", c.containerID, command)
+func (c *ContainerProjectRunner) RunTask(cmdContent string) model.TaskResult {
+	log.Debugw("Executing local task", "cmdContent", cmdContent)
 	// 容器内执行任务
-	return "Build successful (container)", nil
+	return model.TaskResult{}
 }
 
 func (c *ContainerProjectRunner) Cleanup() error {
 	fmt.Printf("Stopping and cleaning up container: %s\n", c.containerID)
 	return nil
+}
+
+// 基础 Runner 之上装饰调度功能，只不过这里的调度是抢占式
+type TaskBufferedRunner struct {
+	baseRunner  ProjectRunner
+	LocalQueue  chan model.Task     // 缓冲队列，存储任务
+	stopChan    chan struct{}       // 停止所有 worker 的信号
+	KVStore     store.KVStoreClient // 存储客户端
+	wg          sync.WaitGroup      // 用于管理协程的退出
+	workerCount int                 // worker 数量
+}
+
+// 初始化时自动启动 worker pool
+func NewTaskBufferedRunner(baseRunner ProjectRunner, kvStore store.KVStoreClient, workerCount int) (*TaskBufferedRunner, error) {
+	if kvStore == nil {
+		return nil, errors.New("kvStore cannot be nil")
+	}
+	if workerCount <= 0 {
+		return nil, errors.New("workerCount must be greater than zero")
+	}
+
+	// 初始化 TaskBufferedRunner
+	taskBufferedRunner := &TaskBufferedRunner{
+		baseRunner:  baseRunner,
+		LocalQueue:  make(chan model.Task, workerCount*2),
+		stopChan:    make(chan struct{}),
+		KVStore:     kvStore,
+		workerCount: workerCount,
+	}
+
+	// 启动所有 worker 协程
+	go taskBufferedRunner.startWorkers()
+
+	log.Infow("TaskBufferedRunner created successfully.", "workerCount", workerCount)
+
+	return taskBufferedRunner, nil
+}
+
+func (r *TaskBufferedRunner) Stop() {
+	close(r.stopChan)
+	r.wg.Wait() // 等待所有 worker 停止
+}
+
+// 包装基础方法
+func (r *TaskBufferedRunner) PrepareEnvironment(ctx context.Context, request *api.PrepareLocalEnvRequest) error {
+	return r.baseRunner.PrepareEnvironment(ctx, request)
+}
+
+func (r *TaskBufferedRunner) RunTask(cmdContent string) model.TaskResult {
+	// r.submitCommand(common.GenCmdKey(req.Project, req.CmdId))
+	return r.baseRunner.RunTask(cmdContent)
+}
+
+func (r *TaskBufferedRunner) Cleanup() error {
+	return r.baseRunner.Cleanup()
+}
+
+// 启动 Worker
+func (r *TaskBufferedRunner) startWorkers() {
+	for i := 0; i < r.workerCount; i++ {
+		r.wg.Add(1)
+		go r.worker(fmt.Sprintf("worker-%d", i+1))
+	}
+}
+
+// 提交命令到队列
+// func (r *TaskBufferedRunner) submitCommand(cmdKey string) {
+// 	r.localQueue <- cmdKey
+// }
+
+// Worker 逻辑
+func (r *TaskBufferedRunner) worker(workerID string) {
+	defer r.wg.Done()
+	for {
+		select {
+		case <-r.stopChan:
+			fmt.Printf("[%s] Stopping worker\n", workerID)
+			return
+		case <-r.stopChan:
+			return
+		case task := <-r.LocalQueue:
+			// 执行任务
+			// TODO: RunTask(cmd)
+			taskRes := r.baseRunner.RunTask(task.Command)
+			// 发送结果
+			task.ResultChan <- taskRes
+			close(task.ResultChan)
+		}
+	}
+}
+
+// 处理命令
+func (r *TaskBufferedRunner) processCommand(workerID, cmdID string) {
+	// fmt.Printf("[%s] Processing command: %s\n", workerID, cmdID)
+	// cmdContent, err := r.kvStore.Get(context.Background(), cmdID).Result()
+	// if err != nil {
+	// 	fmt.Printf("[%s] Failed to fetch command content: %s\n", workerID, err)
+	// 	return
+	// }
+	// result, err := r.baseRunner.RunTask(cmdContent)
+	// if err != nil {
+	// 	fmt.Printf("[%s] Command execution failed: %s\n", workerID, err)
+	// 	return
+	// }
+	// fmt.Printf("[%s] Command executed successfully: %s\n", workerID, result)
+}
+
+func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
+	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
+}
+
+func (r *TaskBufferedRunner) TryFinishTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
+	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Claimed, model.Done, operator, config.TASKTTL)
+}
+
+// 处理具体任务
+func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *model.Task, operator string) (model.TaskResult, error) {
+	// 提交任务并等待结果
+	select {
+	case r.LocalQueue <- *task:
+		select {
+		case result := <-task.ResultChan:
+			if result.Err != nil {
+				return model.TaskResult{}, result.Err
+			}
+			// 更新任务状态为完成
+			luaRes, _ := r.TryFinishTask(ctx, task.CmdKey, operator)
+			if luaRes.Code != 0 {
+				return model.TaskResult{}, errors.New("failed to finish task")
+			}
+			return result, nil
+		case <-ctx.Done():
+			return model.TaskResult{}, ctx.Err()
+		}
+
+	default:
+		return model.TaskResult{}, errors.New("task queue is full")
+	}
 }

@@ -64,7 +64,7 @@ type CommandResult struct {
 }
 
 func constructExecCommand(command *Command, workDir string, stdio *Stdio, designatedUser bool) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer, error) {
-	log.Infow("constructExecCommand", "cmd_content", command.Content, "workDir", workDir)
+	// log.Debugw("constructExecCommand", "cmd_content", command.Content, "workDir", workDir)
 
 	if stdio == nil {
 		stdio = &Stdio{}

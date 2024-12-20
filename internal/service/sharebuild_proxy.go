@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/chanfun-ren/executor/api"
+	"github.com/chanfun-ren/executor/internal/common"
 	"github.com/chanfun-ren/executor/internal/network"
+	"github.com/chanfun-ren/executor/internal/store"
 	"github.com/chanfun-ren/executor/pkg/config"
 	"github.com/chanfun-ren/executor/pkg/logging"
-	"github.com/chanfun-ren/executor/pkg/store"
 	"github.com/chanfun-ren/executor/pkg/utils"
 	"google.golang.org/grpc"
 )
@@ -23,7 +23,7 @@ import (
 
 // - executor_client. SubmitAndExecute
 
-var log = logging.DefaultLogger()
+var log = logging.NewComponentLogger("proxy")
 
 type SharebuildProxyService struct {
 	api.UnimplementedShareBuildProxyServer
@@ -52,7 +52,7 @@ func (s *SharebuildProxyService) InitializeBuildEnv(ctx context.Context, req *ap
 	if err != nil {
 		return nil, err
 	}
-	s.projectToExecutors.Store(genProjectKey(req.Project), ready_executors)
+	s.projectToExecutors.Store(common.GenProjectKey(req.Project), ready_executors)
 
 	// 3. 返回成功信息
 	return &api.InitializeBuildEnvResponse{
@@ -145,21 +145,29 @@ func (s *SharebuildProxyService) prepareEnvironments(executors []*api.Peer, req 
 }
 
 func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api.ForwardAndExecuteRequest) (*api.ForwardAndExecuteResponse, error) {
+	// Key: project:<cmd_id>
+	// Fields:
+	// - status: "unclaimed", "claimed", "done"
+	// - content: Actual command content
+	// - executor_id: ID of the executor currently processing the command
 	// 1. 将命令存储到公共存储组件
-	key := fmt.Sprintf("%s:%s", req.Project, req.CmdId)
-	value := req.CmdContent
-	ttl := time.Duration(15 * time.Minute)
+	key := common.GenCmdKey(req.Project, req.CmdId)
+	// cmdContent := req.CmdContent
 
-	err := s.kvStoreClient.Set(key, value, ttl)
-	if err != nil {
-		log.Errorw("Failed to store command in KV store", "key", key, "err", err)
-		return nil, err
+	fields := map[string]interface{}{
+		"status":  "unclaimed",
+		"content": "echo 'hello world'",
 	}
-	log.Infow("Command stored in KV store", "key", key)
+	err := s.kvStoreClient.HSetWithTTL(ctx, key, fields, config.CMDTTL)
+	if err != nil {
+		log.Errorw("Failed to store command", "key", key, "fields", fields, "err", err)
+	}
+
+	log.Debugw("Command stored in KV store", "key", key, "fields", fields)
 
 	// 2. 获取 project 对应的 executors
 	log.Debugw("ForwardAndExecute projectToExecutors", "content", utils.MapToString(&s.projectToExecutors))
-	res, ok := s.projectToExecutors.Load(genProjectKey(req.Project))
+	res, ok := s.projectToExecutors.Load(common.GenProjectKey(req.Project))
 	if !ok {
 		return nil, fmt.Errorf("no executors found for project %v", req.Project)
 	}
@@ -239,8 +247,4 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 		}, nil
 	}
 
-}
-
-func genProjectKey(proj *api.Project) string {
-	return fmt.Sprintf("%s|%s|%s", proj.NinjaHost, proj.NinjaDir, proj.RootDir)
 }

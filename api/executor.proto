@@ -32,9 +32,11 @@ message SubmitAndExecuteRequest {
 }
 
 message SubmitAndExecuteResponse {
-  string status = 1; // 返回成功信号
+  // TODO: -> {code, msg}
+  string status = 1; // 返回成功信号 
   string id = 2;     // 任务id
-  Peer executor = 3; // 任务是在哪个executor执行完成的
+  // TODO: 删除 executor 字段
+  Peer executor = 3; // 任务是在哪个executor执行完成的 
   int32 nFail = 4; // 失败了几次 NFS可能导致文件系统忙，有时候需要重试
 
   string std_out = 5; // 命令执行标准输出

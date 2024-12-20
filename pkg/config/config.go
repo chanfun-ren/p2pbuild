@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"time"
 
 	"github.com/chanfun-ren/executor/pkg/logging"
 )
@@ -12,6 +14,9 @@ const EXECUTOR_GROUP_SIZE = 3
 
 // sharebuild daemon config
 const GRPC_PORT = 50051 // TODO: 更优雅的方式 <- 配置文件导入
+
+// ninja2 located host config, store server port
+const STORE_PORT = 6379
 
 func GetExecutorHome() string {
 	username := os.Getenv("USER")
@@ -23,18 +28,7 @@ func GetExecutorHome() string {
 	return executorHome
 }
 
-// redis config
-type RedisConfig struct {
-	Addr     string
-	Password string
-	DB       int
-}
+var POOLSIZE = runtime.NumCPU()
 
-// DefaultRedisConfig 返回默认的 Redis 配置
-func DefaultRedisConfig() *RedisConfig {
-	return &RedisConfig{
-		Addr:     "localhost:6379", // 默认地址
-		Password: "",               // 默认无密码
-		DB:       0,                // 默认数据库
-	}
-}
+var CMDTTL = 10 * time.Minute
+var TASKTTL = 5 * time.Minute
