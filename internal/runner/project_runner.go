@@ -3,12 +3,14 @@ package runner
 // TODO: 拆分 runner 基础功能和调度功能
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/chanfun-ren/executor/api"
 	"github.com/chanfun-ren/executor/internal/model"
@@ -16,6 +18,10 @@ import (
 	"github.com/chanfun-ren/executor/pkg/config"
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/chanfun-ren/executor/pkg/utils"
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
+	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 )
 
 type ProjectRunner interface {
@@ -107,7 +113,8 @@ func (l *LocalProjectRunner) Cleanup() error {
 
 type ContainerProjectRunner struct {
 	containerImage string
-	containerID    string
+	workDir        string
+	mountedRootDir string
 }
 
 func NewContainerProjectRunner(image string) *ContainerProjectRunner {
@@ -118,6 +125,8 @@ func NewContainerProjectRunner(image string) *ContainerProjectRunner {
 
 func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
 	log.Infow("Preparing container environment for project", "project", req.String())
+	c.workDir = req.Project.NinjaDir
+	c.mountedRootDir = utils.GenMountedRootDir(req.Project.NinjaHost, req.Project.RootDir)
 
 	// 1. 挂载项目
 	err := mountNinjaProject(ctx, req)
@@ -136,19 +145,157 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 		}
 	}(c.containerImage)
 
-	// 3. 提前返回，拉取任务在后��进行
+	// 3. 提前返回，拉取任务在后台进行
 	return nil
 
 }
 
 func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
-	log.Debugw("Executing local task", "cmdContent", task.Command)
-	// 容器内执行任务
-	return model.TaskResult{}
+	// 使用传入的上下文或创建带超时的上下文
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	log.Infow("Starting container task execution",
+		"cmdKey", task.CmdKey,
+		"command", task.Command,
+		"workDir", c.workDir,
+	)
+
+	// 创建 Docker 客户端
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return c.newErrorResult(task.CmdKey, "failed to create docker client", err)
+	}
+	defer cli.Close()
+
+	// 创建容器
+	containerID, err := c.createContainer(ctx, cli, task.Command)
+	if err != nil {
+		return c.newErrorResult(task.CmdKey, "failed to create container", err)
+	}
+
+	// 确保容器被清理
+	defer func() {
+		// 暂不清理，调试时保留容器
+		// c.cleanupContainer(context.Background(), cli, containerID)
+	}()
+
+	// 启动容器
+	if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		return c.newErrorResult(task.CmdKey, "failed to start container", err)
+	}
+
+	// 等待容器执行完成
+	statusCh, errCh := cli.ContainerWait(ctx, containerID, container.WaitConditionNotRunning)
+	var status container.WaitResponse
+	select {
+	case err := <-errCh:
+		return c.newErrorResult(task.CmdKey, "container wait failed", err)
+	case status = <-statusCh:
+		// 继续处理
+	case <-ctx.Done():
+		return c.newErrorResult(task.CmdKey, "container execution timeout", ctx.Err())
+	}
+
+	// 获取容器日志
+	stdout, stderr, err := c.getContainerLogs(ctx, cli, containerID)
+	if err != nil {
+		return c.newErrorResult(task.CmdKey, "failed to get container logs", err)
+	}
+
+	res := model.TaskResult{
+		CmdKey:   task.CmdKey,
+		StdOut:   stdout,
+		StdErr:   stderr,
+		Err:      nil,
+		ExitCode: int(status.StatusCode),
+		Status:   c.getStatus(status.StatusCode),
+	}
+
+	log.Debugw("Container Task done.", "task", task, "result", res)
+	return res
+}
+
+// 辅助方法
+func (c *ContainerProjectRunner) createContainer(ctx context.Context, cli *client.Client, cmd string) (string, error) {
+	resp, err := cli.ContainerCreate(ctx, &container.Config{
+		Image:      c.containerImage,
+		Cmd:        []string{"/bin/bash", "-c", cmd},
+		WorkingDir: c.workDir,
+		Tty:        false,
+	}, &container.HostConfig{
+		Mounts: []mount.Mount{{
+			Type:   mount.TypeBind,
+			Source: c.mountedRootDir,
+			Target: c.mountedRootDir,
+		}},
+		Resources: container.Resources{
+			Memory:    2 * 1024 * 1024 * 1024, // 2GB
+			CPUQuota:  100000,
+			CPUPeriod: 100000,
+		},
+	}, nil, nil, "")
+
+	if err != nil {
+		return "", err
+	}
+	return resp.ID, nil
+}
+
+func (c *ContainerProjectRunner) getContainerLogs(ctx context.Context, cli *client.Client, containerID string) (string, string, error) {
+	logs, err := cli.ContainerLogs(ctx, containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+	})
+	if err != nil {
+		return "", "", err
+	}
+	defer logs.Close()
+
+	var stdout, stderr bytes.Buffer
+	_, err = stdcopy.StdCopy(&stdout, &stderr, logs)
+	if err != nil {
+		return "", "", err
+	}
+
+	return stdout.String(), stderr.String(), nil
+}
+
+func (c *ContainerProjectRunner) cleanupContainer(ctx context.Context, cli *client.Client, containerID string) {
+	timeout := 20
+	err := cli.ContainerStop(ctx, containerID, container.StopOptions{Timeout: &timeout})
+	if err != nil {
+		log.Warnw("Failed to stop container", "containerID", containerID, "error", err)
+	}
+
+	err = cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
+		Force: true,
+	})
+	if err != nil {
+		log.Warnw("Failed to remove container", "containerID", containerID, "error", err)
+	}
+}
+
+func (c *ContainerProjectRunner) newErrorResult(cmdKey string, msg string, err error) model.TaskResult {
+	return model.TaskResult{
+		CmdKey:   cmdKey,
+		StdOut:   "",
+		StdErr:   fmt.Sprintf("%s: %v", msg, err),
+		Err:      err,
+		ExitCode: 1,
+		Status:   "error",
+	}
+}
+
+func (c *ContainerProjectRunner) getStatus(exitCode int64) string {
+	if exitCode == 0 {
+		return "ok"
+	}
+	return "error"
 }
 
 func (c *ContainerProjectRunner) Cleanup() error {
-	fmt.Printf("Stopping and cleaning up container: %s\n", c.containerID)
+	fmt.Println("Stopping and cleaning up container")
 	return nil
 }
 

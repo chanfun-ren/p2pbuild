@@ -31,11 +31,10 @@ func LogInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, ha
 	log.Debugw("Received request", "method", info.FullMethod, "request", req)
 	start := time.Now()
 	resp, err := handler(ctx, req)
-	// TODO: 统一设计错误码
 	if err != nil {
 		log.Errorw("Failed to handle request", "method", info.FullMethod, "error", err)
 	}
-	log.Debugw("Handled request", "method", info.FullMethod, "response", resp, "duration", time.Since(start))
+	log.Debugw("Handled request", "method", info.FullMethod, "duration", time.Since(start))
 	return resp, err
 }
 
