@@ -119,13 +119,14 @@ func (s *ShareBuildExecutorService) SubmitAndExecute(ctx context.Context, req *a
 			ResultChan: resultChan,
 		}
 		taskRes, err := taskRunner.SubmitAndWaitTaskRes(ctx, &task, executorId)
-		if err != nil {
+		if err != nil || taskRes.ExitCode != 0 {
 			// fallback
 			taskRunner.UnclaimeTask(ctx, cmdKey, executorId)
 			return NewSAEResponse(api.RC_EXECUTOR_TASK_FAILED, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, "", ""), nil
 		}
 
-		// 任务执行成功：更新任务状态为完成
+		// 任务执行成功：更新任务状态为完成.
+		// TODO: 设置 executor 可持有命令的最大时间, claimed 状态超时后未变成 done 则自动释放
 		luaRes, _ := taskRunner.TryFinishTask(ctx, task.CmdKey, executorId)
 		if luaRes.Code != 0 {
 			return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, "failed to finish task", req.CmdId, "", ""), nil

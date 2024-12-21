@@ -8,6 +8,11 @@ import (
 )
 
 // ClaimCmdResult 用于解析 Lua 脚本返回值
+// 对于 RedisClient 的 ClaimCmd 方法，返回值的含义如下：
+// -- -1: key 不存在
+// --  0: 成功将状态从 expected_status 改为 new_status
+// --  1: 失败，状态不匹配
+// --  2: 失败，参数错误（例如 TTL 非法）
 type ClaimCmdResult struct {
 	Code         int    `json:"code"`
 	Status       string `json:"status"`

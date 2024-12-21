@@ -3,7 +3,6 @@ package runner
 // TODO: 拆分 runner 基础功能和调度功能
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -33,7 +32,7 @@ func NewScheduledProjectRunner(containerImage string, kvStoreClient store.KVStor
 	return NewTaskBufferedRunner(NewContainerProjectRunner(containerImage), kvStoreClient, workerCount)
 }
 
-var log = logging.DefaultLogger()
+var log = logging.NewComponentLogger("runner")
 
 type LocalProjectRunner struct {
 	workDir string
@@ -69,38 +68,35 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) err
 
 func (l *LocalProjectRunner) RunTask(task model.Task) model.TaskResult {
 	log.Debugw("Executing local task", "task cmd", task.Command)
-	// 本地执行任务
-	workDir := l.workDir
+
 	cmd := &utils.Command{
-		Content:     task.Command,
-		Env:         make([]string, 0),
-		Use_console: false,
+		Content: task.Command,
+		WorkDir: l.workDir,
+		Env:     make(map[string]string),
 	}
 
-	var stdout, stderr bytes.Buffer
-	stdio := &utils.Stdio{
-		Stdin:  nil,
-		Stdout: &stdout,
-		Stderr: &stderr,
-	}
-	nBusy, cmdRes := utils.Run(context.Background(), cmd, workDir, stdio, true)
-	statusStr := "ok"
+	cmdRes := utils.ExecCommand(context.Background(), cmd)
 
-	// TODO: 重构 utils.Run 把命令的输出和错误信息返回
+	status := "ok"
 	var err error
-	if nBusy != 0 {
-		log.Errorw("Failed to run command", "cmd", cmd, "result", cmdRes)
-		err = errors.New("command failed")
+	if cmdRes.ExitCode != 0 {
+		status = "error"
+		// 只在有错误时设置
+		if cmdRes.Error != "" {
+			err = errors.New(cmdRes.Error)
+		}
 	}
 
 	res := model.TaskResult{
-		CmdKey: task.CmdKey,
-		StdOut: stdout.String(),
-		StdErr: stderr.String(),
-		Err:    err,
-		Status: statusStr,
+		CmdKey:   task.CmdKey,
+		StdOut:   cmdRes.Stdout,
+		StdErr:   cmdRes.Stderr,
+		Err:      err,
+		ExitCode: cmdRes.ExitCode,
+		Status:   status,
 	}
 
+	log.Debugw("Task done.", "task", task, "result", res)
 	return res
 }
 
@@ -140,7 +136,7 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 		}
 	}(c.containerImage)
 
-	// 3. 提前返回，拉取任务在后台进行
+	// 3. 提前返回，拉取任务在后��进行
 	return nil
 
 }
@@ -244,22 +240,6 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 	}
 }
 
-// 处理命令
-func (r *TaskBufferedRunner) processCommand(workerID, cmdID string) {
-	// fmt.Printf("[%s] Processing command: %s\n", workerID, cmdID)
-	// cmdContent, err := r.kvStore.Get(context.Background(), cmdID).Result()
-	// if err != nil {
-	// 	fmt.Printf("[%s] Failed to fetch command content: %s\n", workerID, err)
-	// 	return
-	// }
-	// result, err := r.baseRunner.RunTask(cmdContent)
-	// if err != nil {
-	// 	fmt.Printf("[%s] Command execution failed: %s\n", workerID, err)
-	// 	return
-	// }
-	// fmt.Printf("[%s] Command executed successfully: %s\n", workerID, result)
-}
-
 func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
 	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
 }
@@ -279,10 +259,7 @@ func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *mod
 	case r.LocalQueue <- *task:
 		select {
 		case result := <-task.ResultChan:
-			if result.Err != nil {
-				return model.TaskResult{}, result.Err
-			}
-			return result, nil
+			return result, result.Err
 		case <-ctx.Done():
 			return model.TaskResult{}, ctx.Err()
 		}

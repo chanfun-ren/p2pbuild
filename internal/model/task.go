@@ -45,9 +45,19 @@ type Task struct {
 }
 
 type TaskResult struct {
-	CmdKey string
-	Status string
-	StdOut string
-	StdErr string
-	Err    error
+	CmdKey   string
+	Status   string
+	StdOut   string
+	StdErr   string
+	Err      error
+	ExitCode int
+}
+
+// Task 的字符串表示
+func (t Task) String() string {
+	return fmt.Sprintf("{CmdKey: %s, Command: %s}", t.CmdKey, t.Command)
+}
+
+func (t TaskResult) String() string {
+	return fmt.Sprintf("{CmdKey: %s, Status: %s, StdOut: %s, StdErr: %s, Err: %v, ExitCode: %d}", t.CmdKey, t.Status, t.StdOut, t.StdErr, t.Err, t.ExitCode)
 }

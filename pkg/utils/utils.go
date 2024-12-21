@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/chanfun-ren/executor/pkg/config"
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/distribution/reference"
 
@@ -135,4 +136,32 @@ func MapToString(m *sync.Map) string {
 		return true
 	})
 	return strings.Join(result, ", ")
+}
+
+// MountNFS 挂载 NFS 共享目录
+func MountNFS(ctx context.Context, nfsServerHost, nfsRemotePath, localMountPoint string) error {
+	// 拼接 mount 命令
+	mountCmd := &Command{
+		Content: fmt.Sprintf("mount -t nfs -o async %s:%s %s",
+			nfsServerHost, nfsRemotePath, localMountPoint),
+	}
+
+	// 获取当前工作目录
+	workDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current working directory: %w", err)
+	}
+	mountCmd.WorkDir = workDir
+
+	// 执行挂载命令
+	result := ExecCommand(ctx, mountCmd)
+	if result.ExitCode != 0 {
+		return fmt.Errorf("mount nfs failed: %s", result.Stderr)
+	}
+
+	return nil
+}
+
+func GenMountedRootDir(ninjaHost string, projRootDir string) string {
+	return config.GetExecutorHome() + ninjaHost + projRootDir
 }
