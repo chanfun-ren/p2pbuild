@@ -37,7 +37,7 @@ func NewRedisClient(config KVStoreConfig) (KVStoreClient, error) {
 		return nil, fmt.Errorf("failed to connect to Redis at %s: %w", addr, err)
 	}
 
-	log.Info("Connected to Redis")
+	log.Infow("Connected to Redis", "addr", addr)
 
 	script := redis.NewScript(`
 		-- 输入参数：
