@@ -245,14 +245,6 @@ func (c *ContainerProjectRunner) createContainer(ctx context.Context, cli *clien
 		return "", fmt.Errorf("failed to create container: %w", err)
 	}
 
-	// 打印详细信息以便调试
-	log.Infow("Container created",
-		"containerID", resp.ID,
-		"mountedRootDir", c.mountedRootDir,
-		"mountedBuildDir", c.mountedBuildDir,
-		"user", fmt.Sprintf("%d:%d", currentUID, currentGID),
-	)
-
 	return resp.ID, nil
 }
 

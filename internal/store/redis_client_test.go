@@ -138,14 +138,17 @@ func TestClaimCmd(t *testing.T) {
 	t.Run("Complete state transition cycle", func(t *testing.T) {
 		key := "test:claim4"
 		transitions := []struct {
-			from     model.TaskStatus
-			to       model.TaskStatus
-			modifier string
-			wantCode int
+			from       model.TaskStatus
+			to         model.TaskStatus
+			modifier   string
+			wantCode   int
+			wantStatus string
 		}{
-			{model.Unclaimed, model.Claimed, "worker1", 0},
-			{model.Claimed, model.Done, "worker1", 0},
-			{model.Done, model.Unclaimed, "system", 0}, // Reset cycle
+			{model.Unclaimed, model.Claimed, "worker1", 0, model.Claimed.String()},
+			{model.Claimed, model.Done, "worker1", 0, model.Done.String()},
+			{model.Claimed, model.Unclaimed, "worker1", 1, model.Done.String()},
+			{model.Done, model.Unclaimed, "system", 0, model.Unclaimed.String()}, // Reset cycle
+			{model.Unclaimed, model.Claimed, "worker1", 0, model.Claimed.String()},
 		}
 
 		// Set initial state
@@ -158,8 +161,9 @@ func TestClaimCmd(t *testing.T) {
 			result, err := client.ClaimCmd(ctx, key, tr.from, tr.to, tr.modifier, 10*time.Second)
 			require.NoError(t, err)
 			assert.Equal(t, tr.wantCode, result.Code, "transition %d failed", i)
-			assert.Equal(t, tr.to.String(), result.Status)
+			assert.Equal(t, tr.wantStatus, result.Status)
 			assert.Equal(t, tr.modifier, result.LastModifier)
+			t.Logf("transition %d: %+v", i, result)
 		}
 	})
 

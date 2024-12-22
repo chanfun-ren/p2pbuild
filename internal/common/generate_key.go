@@ -7,7 +7,7 @@ import (
 )
 
 func GenProjectKey(proj *api.Project) string {
-	return fmt.Sprintf("%s|%s|%s", proj.NinjaHost, proj.NinjaDir, proj.RootDir)
+	return fmt.Sprintf("%s|%s", proj.NinjaHost, proj.RootDir)
 }
 
 func GenCmdKey(proj *api.Project, cmdId string) string {

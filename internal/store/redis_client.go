@@ -148,6 +148,7 @@ func (r *RedisClient) ClaimCmd(ctx context.Context, key string, expectedStatus m
 
 	var result ClaimCmdResult
 	if err := json.Unmarshal([]byte(rawResult.(string)), &result); err != nil {
+		log.Errorw("ClaimCmd", "err", err)
 		return ClaimCmdResult{}, errors.New("failed to parse Lua script response")
 	}
 	return result, nil
