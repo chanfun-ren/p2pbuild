@@ -165,3 +165,7 @@ func MountNFS(ctx context.Context, nfsServerHost, nfsRemotePath, localMountPoint
 func GenMountedRootDir(ninjaHost string, projRootDir string) string {
 	return config.GetExecutorHome() + ninjaHost + projRootDir
 }
+
+func GetMountedBuildDir(ninjaHost string, ninjaBuildDir string) string {
+	return config.GetExecutorHome() + ninjaHost + ninjaBuildDir
+}

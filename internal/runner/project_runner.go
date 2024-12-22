@@ -112,9 +112,9 @@ func (l *LocalProjectRunner) Cleanup() error {
 }
 
 type ContainerProjectRunner struct {
-	containerImage string
-	workDir        string
-	mountedRootDir string
+	containerImage  string
+	mountedRootDir  string
+	mountedBuildDir string
 }
 
 func NewContainerProjectRunner(image string) *ContainerProjectRunner {
@@ -125,9 +125,8 @@ func NewContainerProjectRunner(image string) *ContainerProjectRunner {
 
 func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
 	log.Infow("Preparing container environment for project", "project", req.String())
-	c.workDir = req.Project.NinjaDir
 	c.mountedRootDir = utils.GenMountedRootDir(req.Project.NinjaHost, req.Project.RootDir)
-
+	c.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
 	// 1. 挂载项目
 	err := mountNinjaProject(ctx, req)
 	if err != nil {
@@ -158,7 +157,8 @@ func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
 	log.Infow("Starting container task execution",
 		"cmdKey", task.CmdKey,
 		"command", task.Command,
-		"workDir", c.workDir,
+		"mountedRootDir", c.mountedRootDir,
+		"mountedBuildDir", c.mountedBuildDir,
 	)
 
 	// 创建 Docker 客户端
@@ -218,11 +218,16 @@ func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
 
 // 辅助方法
 func (c *ContainerProjectRunner) createContainer(ctx context.Context, cli *client.Client, cmd string) (string, error) {
+	// 获取当前用户的 UID 和 GID
+	currentUID := os.Getuid()
+	currentGID := os.Getgid()
+
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Image:      c.containerImage,
 		Cmd:        []string{"/bin/bash", "-c", cmd},
-		WorkingDir: c.workDir,
+		WorkingDir: c.mountedBuildDir,
 		Tty:        false,
+		User:       fmt.Sprintf("%d:%d", currentUID, currentGID), // 使用宿主机的用户权限
 	}, &container.HostConfig{
 		Mounts: []mount.Mount{{
 			Type:   mount.TypeBind,
@@ -237,8 +242,17 @@ func (c *ContainerProjectRunner) createContainer(ctx context.Context, cli *clien
 	}, nil, nil, "")
 
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to create container: %w", err)
 	}
+
+	// 打印详细信息以便调试
+	log.Infow("Container created",
+		"containerID", resp.ID,
+		"mountedRootDir", c.mountedRootDir,
+		"mountedBuildDir", c.mountedBuildDir,
+		"user", fmt.Sprintf("%d:%d", currentUID, currentGID),
+	)
+
 	return resp.ID, nil
 }
 
