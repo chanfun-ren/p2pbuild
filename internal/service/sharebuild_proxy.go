@@ -29,7 +29,7 @@ type SharebuildProxyService struct {
 	api.UnimplementedShareBuildProxyServer
 	NetManager         *network.NetManager
 	projectToExecutors sync.Map // map[string][]*api.Peer
-	grpcClients        sync.Map // map[*api.Project][]*grpc.ClientConn
+	grpcClients        sync.Map // map[*api.Project][]*grpc.ClientConn	// TODO: 复用 client: map[string]*grpc.ClientConn
 	kvStoreClient      store.KVStoreClient
 }
 
@@ -53,7 +53,6 @@ func (s *SharebuildProxyService) InitializeBuildEnv(ctx context.Context, req *ap
 	if err != nil {
 		log.Errorw("failed to prepare environments", "executors", executors, "err", err)
 		return NewIBEResponse(api.RC_PROXY_INTERNAL_ERROR, "Failed to prepare environments", nil), nil
-
 	}
 	s.projectToExecutors.Store(common.GenProjectKey(req.Project), ready_executors)
 
@@ -102,7 +101,7 @@ func (s *SharebuildProxyService) getOrCreateGrpcConnsForProject(project *api.Pro
 		log.Infow("Connecting to executor", "executor", executor.String(), "target", target)
 
 		// 创建 gRPC 连接
-		conn, err := grpc.Dial(target, grpc.WithInsecure()) // 根据需要替换成安全连接配置
+		conn, err := grpc.Dial(target, grpc.WithInsecure())
 		if err != nil {
 			log.Errorw("Failed to connect to executor", "executor", executor.String(), "err", err)
 			return nil, err
@@ -282,5 +281,48 @@ func NewFAEResponseWithExecutor(status *api.Status, executor *api.Peer, cmdId, s
 		Id:       cmdId,
 		StdOut:   stdOut,
 		StdErr:   stdErr,
+	}
+}
+
+func (s *SharebuildProxyService) ClearBuildEnv(ctx context.Context, req *api.ClearBuildEnvRequest) (*api.ClearBuildEnvResponse, error) {
+	// 1. 获取 project 对应的 executors
+	res, ok := s.projectToExecutors.Load(common.GenProjectKey(req.Project))
+	if !ok {
+		return NewCBEResponse(api.RC_PROXY_NO_AVAILABLE_EXECUTOR, "No executor found for project"), nil
+	}
+	executors, ok := res.([]*api.Peer)
+	if !ok {
+		return NewCBEResponse(api.RC_PROXY_INTERNAL_ERROR, fmt.Sprintf("Invalid type for executors: expected []*api.Peer, got %T", executors)), nil
+	}
+
+	// 2. 通知每个 executor 清理环境
+	conns, err := s.getOrCreateGrpcConnsForProject(req.Project, executors)
+	if err != nil {
+		return NewCBEResponse(api.RC_PROXY_INTERNAL_ERROR, fmt.Sprintf("Failed to create gRPC connections: %v", err)), nil
+	}
+
+	for i, conn := range conns {
+		client := api.NewShareBuildExecutorClient(conn)
+		_, err := client.CleanupLocalEnv(context.Background(), &api.CleanupLocalEnvRequest{
+			Project: req.Project,
+		})
+		if err != nil {
+			// TODO: 需要重试
+			log.Errorw("Failed to clear environment on executor", "executor", executors[i].String(), "err", err)
+			continue
+		}
+		log.Infow("Successfully cleared environment on executor", "executor", executors[i].String())
+	}
+	// 3. 删除 project 对应的 executors
+	s.projectToExecutors.Delete(common.GenProjectKey(req.Project))
+	return NewCBEResponse(api.RC_PROXY_OK, "Environment cleared successfully"), nil
+}
+
+func NewCBEResponse(code api.RC, message string) *api.ClearBuildEnvResponse {
+	return &api.ClearBuildEnvResponse{
+		Status: &api.Status{
+			Code:    code,
+			Message: message,
+		},
 	}
 }

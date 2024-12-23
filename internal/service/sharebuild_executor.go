@@ -160,3 +160,25 @@ func NewPLEResponse(statusCode api.RC, statusMessage string) *api.PrepareLocalEn
 		},
 	}
 }
+
+func (s *ShareBuildExecutorService) CleanupLocalEnv(ctx context.Context, req *api.CleanupLocalEnvRequest) (*api.CleanupLocalEnvResponse, error) {
+	projectRunner, ok := s.getProjectRunner(req.Project)
+	if !ok {
+		return NewCLEResponse(api.RC_EXECUTOR_RESOURCE_NOT_FOUND, "project runner not found"), nil
+	}
+	err := projectRunner.Cleanup(ctx)
+	if err != nil {
+		return NewCLEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to cleanup project runner: %v", err)), nil
+	}
+	s.ProjectRunners.Delete(common.GenProjectKey(req.Project))
+	return NewCLEResponse(api.RC_EXECUTOR_OK, "project runner cleaned up"), nil
+}
+
+func NewCLEResponse(statusCode api.RC, statusMessage string) *api.CleanupLocalEnvResponse {
+	return &api.CleanupLocalEnvResponse{
+		Status: &api.Status{
+			Code:    statusCode,
+			Message: statusMessage,
+		},
+	}
+}

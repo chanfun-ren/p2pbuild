@@ -42,4 +42,4 @@ message ForwardAndExecuteResponse {
 
 message ClearBuildEnvRequest { Project project = 1; }
 
-message ClearBuildEnvResponse { string status = 1; }
+message ClearBuildEnvResponse { Status status = 1; }

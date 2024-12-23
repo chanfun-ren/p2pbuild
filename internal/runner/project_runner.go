@@ -1,6 +1,6 @@
 package runner
 
-// TODO: 拆分 runner 基础功能和调度功能
+// TODO: 拆分 runner 基础功能和调度功能到不同文件
 
 import (
 	"bytes"
@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -27,7 +26,7 @@ import (
 type ProjectRunner interface {
 	PrepareEnvironment(ctx context.Context, request *api.PrepareLocalEnvRequest) error
 	RunTask(task model.Task) model.TaskResult // 执行编译任务
-	Cleanup() error                           // 清理资源
+	Cleanup(ctx context.Context) error        // 清理资源
 }
 
 // NewProjectRunner 根据传入的 containerImage 创建相应的 ProjectRunner
@@ -41,7 +40,8 @@ func NewScheduledProjectRunner(containerImage string, kvStoreClient store.KVStor
 var log = logging.NewComponentLogger("runner")
 
 type LocalProjectRunner struct {
-	workDir string
+	workDir        string
+	mountedRootDir string
 }
 
 func NewLocalProjectRunner() *LocalProjectRunner {
@@ -51,16 +51,22 @@ func NewLocalProjectRunner() *LocalProjectRunner {
 func (l *LocalProjectRunner) PrepareEnvironment(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
 	log.Infow("Preparing local environment for project", "project", req.String())
 	l.workDir = req.Project.NinjaDir
-	return mountNinjaProject(ctx, req)
+	mountedRootDir, err := mountNinjaProject(ctx, req)
+	if err != nil {
+		log.Errorw("Failed to mount ninja project", "req", req, "error", err)
+		return err
+	}
+	l.mountedRootDir = mountedRootDir
+	return nil
 }
 
-func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
+func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) (string, error) {
 	// 设置本地编译环境，例如 NFS 挂载
 	project := req.GetProject()
 	ninjaHost := project.GetNinjaHost()
-	rootDir := strings.TrimSuffix(project.GetRootDir(), "/") //把结尾的斜杠去掉，方便后面字符串替换
+	rootDir := project.GetRootDir()
+	log.Debugw("Mounting ninja project", "ninjaHost", ninjaHost, "rootDir", rootDir)
 
-	log.Debugw("Mounting ninja project", "ninjaHost", ninjaHost)
 	// 生成挂载点目录, 若目录不存在则递归创建
 	mountedRootDir := utils.GenMountedRootDir(ninjaHost, rootDir)
 	if err := os.MkdirAll(mountedRootDir, os.ModePerm); err != nil {
@@ -69,7 +75,7 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) err
 	log.Debugw("directory created successfully", "mountedRootDir", mountedRootDir)
 
 	// 执行挂载 NFS 操作
-	return utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
+	return mountedRootDir, utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
 }
 
 func (l *LocalProjectRunner) RunTask(task model.Task) model.TaskResult {
@@ -106,8 +112,12 @@ func (l *LocalProjectRunner) RunTask(task model.Task) model.TaskResult {
 	return res
 }
 
-func (l *LocalProjectRunner) Cleanup() error {
-	fmt.Println("Cleaning up local resources")
+func (l *LocalProjectRunner) Cleanup(ctx context.Context) error {
+	err := utils.UnmountNFS(ctx, l.mountedRootDir)
+	if err != nil {
+		log.Errorw("Failed to unmount nfs", "mountedRootDir", l.mountedRootDir, "error", err)
+		return err
+	}
 	return nil
 }
 
@@ -128,7 +138,7 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 	c.mountedRootDir = utils.GenMountedRootDir(req.Project.NinjaHost, req.Project.RootDir)
 	c.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
 	// 1. 挂载项目
-	err := mountNinjaProject(ctx, req)
+	_, err := mountNinjaProject(ctx, req)
 	if err != nil {
 		log.Errorw("Failed to mount project", "req", req, "error", err)
 		return err
@@ -176,8 +186,8 @@ func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
 
 	// 确保容器被清理
 	defer func() {
-		// 暂不清理，调试时保留容器
-		// c.cleanupContainer(context.Background(), cli, containerID)
+		// 暂不清理，开发环境调试时保留容器
+		// c.cleanupContainer(ctx, cli, containerID)
 	}()
 
 	// 启动容器
@@ -300,8 +310,17 @@ func (c *ContainerProjectRunner) getStatus(exitCode int64) string {
 	return "error"
 }
 
-func (c *ContainerProjectRunner) Cleanup() error {
-	fmt.Println("Stopping and cleaning up container")
+func (c *ContainerProjectRunner) Cleanup(ctx context.Context) error {
+	// 进行 prepareEnvironment 的反向操作
+	// 1. 清理挂载的目录
+	err := utils.UnmountNFS(ctx, c.mountedRootDir)
+	if err != nil {
+		log.Errorw("Failed to unmount nfs", "mountedRootDir", c.mountedRootDir, "error", err)
+		return err
+	}
+
+	// 2. 清理镜像容器(开发环境保留)
+	// utils.RemoveImageAndContainers(context.Background(), c.containerImage)
 	return nil
 }
 
@@ -356,8 +375,8 @@ func (r *TaskBufferedRunner) RunTask(task model.Task) model.TaskResult {
 	return r.baseRunner.RunTask(task)
 }
 
-func (r *TaskBufferedRunner) Cleanup() error {
-	return r.baseRunner.Cleanup()
+func (r *TaskBufferedRunner) Cleanup(ctx context.Context) error {
+	return r.baseRunner.Cleanup(ctx)
 }
 
 // 启动 Worker

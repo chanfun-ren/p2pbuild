@@ -15,6 +15,7 @@ import (
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/distribution/reference"
 
+	contype "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 )
@@ -138,9 +139,10 @@ func MapToString(m *sync.Map) string {
 	return strings.Join(result, ", ")
 }
 
+// TODO: NFS操作：目录被其他进程打开时，处理 `device is busy` 错误
 // MountNFS 挂载 NFS 共享目录
 func MountNFS(ctx context.Context, nfsServerHost, nfsRemotePath, localMountPoint string) error {
-	// 拼接 mount 命令
+	// 拼接 mount ��令
 	mountCmd := &Command{
 		Content: fmt.Sprintf("mount -t nfs -o async %s:%s %s",
 			nfsServerHost, nfsRemotePath, localMountPoint),
@@ -163,9 +165,63 @@ func MountNFS(ctx context.Context, nfsServerHost, nfsRemotePath, localMountPoint
 }
 
 func GenMountedRootDir(ninjaHost string, projRootDir string) string {
-	return config.GetExecutorHome() + ninjaHost + projRootDir
+	rootDir := strings.TrimSuffix(projRootDir, "/")
+	return config.GetExecutorHome() + ninjaHost + rootDir
 }
 
 func GetMountedBuildDir(ninjaHost string, ninjaBuildDir string) string {
 	return config.GetExecutorHome() + ninjaHost + ninjaBuildDir
+}
+
+// UnmountNFS 取消挂载 NFS 共享目录
+func UnmountNFS(ctx context.Context, localMountPoint string) error {
+	// 拼接 umount 命令
+	umountCmd := &Command{
+		Content: fmt.Sprintf("umount %s", localMountPoint),
+	}
+
+	// 执行取消挂载命令
+	result := ExecCommand(ctx, umountCmd)
+	if result.ExitCode != 0 {
+		return fmt.Errorf("unmount nfs failed: %s", result.Stderr)
+	}
+
+	return nil
+}
+
+// RemoveImageAndContainers 移除指定镜像及其派生的所有容器
+func RemoveImageAndContainers(ctx context.Context, imageName string) error {
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("failed to create docker client: %w", err)
+	}
+	defer cli.Close()
+
+	containers, err := cli.ContainerList(ctx, contype.ListOptions{All: true})
+	if err != nil {
+		return fmt.Errorf("failed to list containers: %w", err)
+	}
+
+	// 移除与指定镜像相关的所有容器
+	for _, container := range containers {
+		if container.Image == imageName {
+			if err := cli.ContainerStop(ctx, container.ID, contype.StopOptions{}); err != nil {
+				log.Warnf("Failed to stop container %s: %v", container.ID, err)
+			}
+
+			if err := cli.ContainerRemove(ctx, container.ID, contype.RemoveOptions{Force: true}); err != nil {
+				log.Warnf("Failed to remove container %s: %v", container.ID, err)
+			} else {
+				log.Infof("Removed container %s", container.ID)
+			}
+		}
+	}
+
+	_, err = cli.ImageRemove(ctx, imageName, image.RemoveOptions{Force: true})
+	if err != nil {
+		return fmt.Errorf("failed to remove image %s: %w", imageName, err)
+	}
+
+	log.Infof("Removed image %s and its associated containers", imageName)
+	return nil
 }

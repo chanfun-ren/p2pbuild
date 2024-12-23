@@ -41,4 +41,4 @@ message SubmitAndExecuteResponse {
 }
 
 message CleanupLocalEnvRequest { Project project = 1; }
-message CleanupLocalEnvResponse { string status = 1; }
+message CleanupLocalEnvResponse { Status status = 1; }
