@@ -68,13 +68,24 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) (st
 	log.Debugw("Mounting ninja project", "ninjaHost", ninjaHost, "rootDir", rootDir)
 
 	// 生成挂载点目录, 若目录不存在则递归创建
+	// Generate mount point in user's home directory instead of /home/root
 	mountedRootDir := utils.GenMountedRootDir(ninjaHost, rootDir)
-	if err := os.MkdirAll(mountedRootDir, os.ModePerm); err != nil {
-		log.Fatalw("fail to create dir", "mountedRootDir", mountedRootDir, "err", err)
-	}
-	log.Debugw("directory created successfully", "mountedRootDir", mountedRootDir)
+	// Add timeout context
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	// 执行挂载 NFS 操作
+	// Make directory with detailed error logging
+	err := os.MkdirAll(mountedRootDir, 0755)
+	if err != nil {
+		log.Errorw("Failed to create directory",
+			"mountedRootDir", mountedRootDir,
+			"error", err,
+			"currentUser", os.Getenv("USER"),
+			"currentUID", os.Getuid())
+		return "", fmt.Errorf("failed to create mount directory: %w", err)
+	}
+
+	log.Debugw("directory created successfully", "mountedRootDir", mountedRootDir)
 	return mountedRootDir, utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
 }
 

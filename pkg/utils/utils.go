@@ -7,11 +7,12 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
-	"github.com/chanfun-ren/executor/pkg/config"
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/distribution/reference"
 
@@ -141,36 +142,40 @@ func MapToString(m *sync.Map) string {
 
 // TODO: NFS操作：目录被其他进程打开时，处理 `device is busy` 错误
 // MountNFS 挂载 NFS 共享目录
-func MountNFS(ctx context.Context, nfsServerHost, nfsRemotePath, localMountPoint string) error {
-	// 拼接 mount ��令
-	mountCmd := &Command{
-		Content: fmt.Sprintf("mount -t nfs -o async %s:%s %s",
-			nfsServerHost, nfsRemotePath, localMountPoint),
+func MountNFS(ctx context.Context, host, srcDir, dstDir string) error {
+	// Check if running as root
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("mount requires root privileges")
 	}
 
-	// 获取当前工作目录
-	workDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get current working directory: %w", err)
+	cmd := &Command{
+		Content: fmt.Sprintf("mount -t nfs -o async %s:%s %s", host, srcDir, dstDir),
+		WorkDir: "",
+		Env:     nil,
 	}
-	mountCmd.WorkDir = workDir
 
-	// 执行挂载命令
-	result := ExecCommand(ctx, mountCmd)
+	// Execute mount with 30s timeout
+	mountCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	result := ExecCommand(mountCtx, cmd)
 	if result.ExitCode != 0 {
-		return fmt.Errorf("mount nfs failed: %s", result.Stderr)
+		return fmt.Errorf("mount nfs failed: %s (stderr: %s)",
+			result.Error, result.Stderr)
 	}
 
 	return nil
 }
 
 func GenMountedRootDir(ninjaHost string, projRootDir string) string {
-	rootDir := strings.TrimSuffix(projRootDir, "/")
-	return config.GetExecutorHome() + ninjaHost + rootDir
+	// rootDir := strings.TrimSuffix(projRootDir, "/")
+	// return config.GetExecutorHome() + ninjaHost + rootDir
+	return filepath.Join(os.Getenv("HOME"), ".ninja-mounts", ninjaHost, projRootDir)
 }
 
 func GetMountedBuildDir(ninjaHost string, ninjaBuildDir string) string {
-	return config.GetExecutorHome() + ninjaHost + ninjaBuildDir
+	// return config.GetExecutorHome() + ninjaHost + ninjaBuildDir
+	return filepath.Join(os.Getenv("HOME"), ".ninja-mounts", ninjaHost, ninjaBuildDir)
 }
 
 // UnmountNFS 取消挂载 NFS 共享目录

@@ -34,70 +34,66 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 		"env", cmd.Env,
 	)
 
-	// 构建命令
-	execCmd := exec.CommandContext(ctx, "/bin/bash", "-c", cmd.Content)
+	// Prepare command
+	execCmd := exec.CommandContext(ctx, "sh", "-c", cmd.Content)
+	execCmd.Dir = cmd.WorkDir
 
-	// 设置工作目录
-	if cmd.WorkDir != "" {
-		execCmd.Dir = cmd.WorkDir
+	for k, v := range cmd.Env {
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("%s=%s", k, v))
 	}
 
-	// 设置环境变量
-	if len(cmd.Env) > 0 {
-		env := make([]string, 0, len(cmd.Env))
-		for k, v := range cmd.Env {
-			env = append(env, fmt.Sprintf("%s=%s", k, v))
-		}
-		execCmd.Env = append(execCmd.Env, env...)
-	}
-
-	// 准备标准输出和标准错误的buffer
+	// Prepare stdout/stderr buffers
 	var stdout, stderr bytes.Buffer
 	execCmd.Stdout = &stdout
 	execCmd.Stderr = &stderr
 
-	// 执行命令
-	err := execCmd.Run()
-
-	// 准备返回结果
-	result := CommandResult{
-		Stdout:   stdout.String(),
-		Stderr:   stderr.String(),
-		ExitCode: 0,
+	// Execute with timeout context
+	err := execCmd.Start()
+	if err != nil {
+		return CommandResult{
+			ExitCode: -1,
+			Error:    fmt.Sprintf("failed to start command: %v", err),
+		}
 	}
 
-	// 处理错误和退出码
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			result.ExitCode = exitErr.ExitCode()
-			result.Error = exitErr.Error()
-		} else {
-			result.ExitCode = -1
-			result.Error = err.Error()
+	// Wait with timeout
+	done := make(chan error)
+	go func() {
+		done <- execCmd.Wait()
+	}()
+
+	// Wait for completion or timeout
+	select {
+	case <-ctx.Done():
+		// Try to kill if context cancelled
+		execCmd.Process.Kill()
+		return CommandResult{
+			Stdout:   stdout.String(),
+			Stderr:   stderr.String(),
+			ExitCode: -1,
+			Error:    "command timeout",
+		}
+	case err := <-done:
+		result := CommandResult{
+			Stdout:   stdout.String(),
+			Stderr:   stderr.String(),
+			ExitCode: 0,
 		}
 
-		log.Errorw("Command execution failed",
-			"command", cmd.Content,
-			"exitCode", result.ExitCode,
-			"error", result.Error,
-			"stderr", result.Stderr,
-		)
-	} else {
-		log.Infow("Command executed successfully",
-			"command", cmd.Content,
-			"stdout", result.Stdout,
-		)
-	}
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				result.ExitCode = exitErr.ExitCode()
+				result.Error = fmt.Sprintf("%s: %s", exitErr.Error(), stderr.String())
+			} else {
+				result.ExitCode = -1
+				result.Error = fmt.Sprintf("%v: %s", err, stderr.String())
+			}
+		}
 
-	// 如果有标准错误输出，即使命令成功也记录下来
-	if result.Stderr != "" && result.ExitCode == 0 {
-		log.Warnw("Command completed with stderr",
-			"command", cmd.Content,
-			"stderr", result.Stderr,
-		)
-	}
+		log.Warnw("Command executed", "result", result)
 
-	return result
+		return result
+	}
 }
 
 // WithStdio 允许自定义标准输入输出

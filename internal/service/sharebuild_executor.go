@@ -67,7 +67,7 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 	// 准备环境
 	if err := ProjectRunner.PrepareEnvironment(ctx, req); err != nil {
 		log.Errorw("failed to prepare environment", "project", project.String(), "err", err)
-		return NewPLEResponse(api.RC_EXECUTOR_ENV_PREPARE_FAILED, "failed to prepare environment"), nil
+		return NewPLEResponse(api.RC_EXECUTOR_ENV_PREPARE_FAILED, "failed to prepare environment"), fmt.Errorf("failed to prepare environment: %v", err)
 	}
 
 	log.Infow("Environment initialized successfully", "project", project.String())

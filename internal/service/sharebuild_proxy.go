@@ -140,6 +140,10 @@ func (s *SharebuildProxyService) prepareEnvironments(executors []*api.Peer, req 
 
 		log.Infow("Environment prepared successfully for executor", "executor", executors[i])
 	}
+	// if no ready executor, return err
+	if len(ready_executors) == 0 {
+		return ready_executors, fmt.Errorf("no ready executor")
+	}
 	return ready_executors, nil
 }
 
