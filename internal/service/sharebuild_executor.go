@@ -91,53 +91,19 @@ func (s *ShareBuildExecutorService) SubmitAndExecute(ctx context.Context, req *a
 	cmdKey := common.GenCmdKey(req.Project, req.CmdId)
 	log.Infow("SubmitAndExecute", "cmdKey", cmdKey)
 
-	result, err := taskRunner.TryClaimTask(ctx, cmdKey, executorId)
-	log.Debugw("TryClaimTask", "result", result, "err", err)
+	// Submit cmdKey to queue and wait for result
+	resultChan := make(chan model.TaskResult, 1)
+	task := model.Task{
+		CmdKey:     cmdKey,
+		ResultChan: resultChan,
+	}
+
+	taskRes, err := taskRunner.SubmitAndWaitTaskRes(ctx, &task, executorId)
 	if err != nil {
-		return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to claim task: %v", err), req.CmdId, "", ""), nil
+		return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, "", ""), nil
 	}
 
-	// 根据状态码处理逻辑
-	switch result.Code {
-	case -1: // 任务不存在
-		return NewSAEResponse(api.RC_EXECUTOR_RESOURCE_NOT_FOUND, "task not found", req.CmdId, "", ""), nil
-	case 1: // 任务状态不匹配
-		return NewSAEResponse(api.RC_EXECUTOR_TASK_ALREADY_CLAIMED, "task already claimed by others", req.CmdId, "", ""), nil
-	case 2: // 参数错误
-		return NewSAEResponse(api.RC_EXECUTOR_INVALID_ARGUMENT, "invalid arguments", req.CmdId, "", ""), nil
-	case 0: // 成功 claimed
-		// 执行命令，这里可以启动一个后台 goroutine 或者直接执行任务
-		content, err := taskRunner.KVStore.HGet(ctx, cmdKey, "content")
-		if err != nil {
-			return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to get command content: %v", err), req.CmdId, "", ""), nil
-		}
-
-		resultChan := make(chan model.TaskResult, 1)
-		task := model.Task{
-			CmdKey:     cmdKey,
-			Command:    content,
-			ResultChan: resultChan,
-		}
-		taskRes, err := taskRunner.SubmitAndWaitTaskRes(ctx, &task, executorId)
-		if err != nil || taskRes.ExitCode != 0 {
-			// fallback
-			taskRunner.UnclaimeTask(ctx, cmdKey, executorId)
-			return NewSAEResponse(api.RC_EXECUTOR_TASK_FAILED, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, "", ""), nil
-		}
-
-		// 任务执行成功：更新任务状态为完成.
-		// TODO: 设置 executor 可持有命令的最大时间, claimed 状态超时后未变成 done 则自动释放
-		luaRes, _ := taskRunner.TryFinishTask(ctx, task.CmdKey, executorId)
-		if luaRes.Code != 0 {
-			return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, "failed to finish task", req.CmdId, "", ""), nil
-		}
-
-		log.Debugw("task done", "taskRes", taskRes)
-		return NewSAEResponse(api.RC_EXECUTOR_OK, "task executed successfully", req.CmdId, taskRes.StdOut, taskRes.StdErr), nil
-
-	default: // 非预期结果
-		return NewSAEResponse(api.RC_EXECUTOR_UNEXPECTED_RESULT, "unexpected result code", req.CmdId, "", ""), nil
-	}
+	return NewSAEResponse(taskRes.StatusCode, taskRes.Status, req.CmdId, taskRes.StdOut, taskRes.StdErr), nil
 }
 
 func NewSAEResponse(statusCode api.RC, statusMessage, id, stdOut, stdErr string) *api.SubmitAndExecuteResponse {

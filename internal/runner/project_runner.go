@@ -357,7 +357,7 @@ func NewTaskBufferedRunner(baseRunner ProjectRunner, kvStore store.KVStoreClient
 	// 初始化 TaskBufferedRunner
 	taskBufferedRunner := &TaskBufferedRunner{
 		baseRunner:  baseRunner,
-		LocalQueue:  make(chan model.Task, workerCount*2),
+		LocalQueue:  make(chan model.Task, config.QUEUESIZE),
 		stopChan:    make(chan struct{}),
 		KVStore:     kvStore,
 		workerCount: workerCount,
@@ -406,19 +406,71 @@ func (r *TaskBufferedRunner) startWorkers() {
 // Worker 逻辑
 func (r *TaskBufferedRunner) worker(workerID string) {
 	defer r.wg.Done()
+	// Worker handles full task lifecycle
 	for {
 		select {
 		case <-r.stopChan:
 			fmt.Printf("[%s] Stopping worker\n", workerID)
 			return
-		case <-r.stopChan:
-			return
 		case task := <-r.LocalQueue:
-			// 执行任务
-			taskRes := r.baseRunner.RunTask(task)
-			// 发送结果
-			task.ResultChan <- taskRes
-			close(task.ResultChan)
+			// Try claim task
+			result, err := r.TryClaimTask(context.Background(), task.CmdKey, workerID)
+			if err != nil {
+				task.ResultChan <- model.TaskResult{
+					CmdKey: task.CmdKey,
+					Status: "error",
+					Err:    err,
+				}
+				continue
+			}
+			// Handle claim result
+			switch result.Code {
+			case -1: // 任务不存在
+				task.ResultChan <- model.TaskResult{
+					StatusCode: api.RC_EXECUTOR_RESOURCE_NOT_FOUND,
+					Message:    "task not found",
+				}
+			case 1: // 任务状态不匹配
+				task.ResultChan <- model.TaskResult{
+					StatusCode: api.RC_EXECUTOR_TASK_ALREADY_CLAIMED,
+					Message:    "task already claimed by others",
+				}
+			case 2: // 参数错误
+				task.ResultChan <- model.TaskResult{
+					StatusCode: api.RC_EXECUTOR_INVALID_ARGUMENT,
+					Message:    "invalid arguments",
+				}
+			case 0: // 成功 claimed
+				// 从 redis 获取具体命令内容
+				content, err := r.KVStore.HGet(context.Background(), task.CmdKey, "content")
+				if err != nil {
+					task.ResultChan <- model.TaskResult{
+						CmdKey: task.CmdKey,
+						Status: "error",
+						Err:    fmt.Errorf("failed to get command content: %v", err),
+					}
+					continue
+				}
+
+				// 执行命令
+				task.Command = content
+				taskRes := r.baseRunner.RunTask(task)
+				taskRes.StatusCode = api.RC_EXECUTOR_OK
+				// 任务执行成功：更新任务状态为完成.
+				if taskRes.ExitCode == 0 {
+					r.TryFinishTask(context.Background(), task.CmdKey, workerID)
+				} else { // fallback
+					r.UnclaimeTask(context.Background(), task.CmdKey, workerID)
+				}
+				task.ResultChan <- taskRes
+			default:
+				log.Errorf("[%s] Unexpected result code: %d\n", workerID, result.Code)
+				task.ResultChan <- model.TaskResult{
+					StatusCode: api.RC_EXECUTOR_UNEXPECTED_RESULT,
+					Message:    "unexpected result code",
+				}
+			}
+
 		}
 	}
 }
@@ -446,7 +498,6 @@ func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *mod
 		case <-ctx.Done():
 			return model.TaskResult{}, ctx.Err()
 		}
-
 	default:
 		return model.TaskResult{}, errors.New("task queue is full")
 	}

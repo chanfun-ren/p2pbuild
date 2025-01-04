@@ -1,6 +1,10 @@
 package model
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/chanfun-ren/executor/api"
+)
 
 // 状态定义
 type TaskStatus int
@@ -45,6 +49,9 @@ type Task struct {
 }
 
 type TaskResult struct {
+	StatusCode api.RC
+	Message    string
+
 	CmdKey   string
 	Status   string
 	StdOut   string

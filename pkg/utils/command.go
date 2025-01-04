@@ -90,7 +90,7 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 			}
 		}
 
-		log.Warnw("Command executed", "result", result)
+		log.Infow("Command executed", "result", result)
 
 		return result
 	}

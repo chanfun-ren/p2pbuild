@@ -30,5 +30,8 @@ func GetExecutorHome() string {
 
 var POOLSIZE = runtime.NumCPU()
 
+// TODO: 合理配置任务队列大小
+var QUEUESIZE = 1024
+
 var CMDTTL = 10 * time.Minute
 var TASKTTL = 5 * time.Minute
