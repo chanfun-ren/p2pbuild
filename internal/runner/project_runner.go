@@ -26,8 +26,8 @@ import (
 
 type ProjectRunner interface {
 	PrepareEnvironment(ctx context.Context, request *api.PrepareLocalEnvRequest) error
-	RunTask(task model.Task) model.TaskResult // 执行编译任务
-	Cleanup(ctx context.Context) error        // 清理资源
+	RunTask(task *model.Task) model.TaskResult // 执行编译任务
+	Cleanup(ctx context.Context) error         // 清理资源
 }
 
 // NewProjectRunner 根据传入的 containerImage 创建相应的 ProjectRunner
@@ -41,8 +41,9 @@ func NewScheduledProjectRunner(containerImage string, kvStoreClient store.KVStor
 var log = logging.NewComponentLogger("runner")
 
 type LocalProjectRunner struct {
-	workDir        string
-	mountedRootDir string
+	mountedRootDir  string
+	mountedBuildDir string
+	projectRootDir  string
 }
 
 func NewLocalProjectRunner() *LocalProjectRunner {
@@ -51,7 +52,8 @@ func NewLocalProjectRunner() *LocalProjectRunner {
 
 func (l *LocalProjectRunner) PrepareEnvironment(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
 	log.Infow("Preparing local environment for project", "project", req.String())
-	l.workDir = req.Project.NinjaDir
+	l.projectRootDir = req.Project.RootDir
+	l.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
 	mountedRootDir, err := mountNinjaProject(ctx, req)
 	if err != nil {
 		log.Errorw("Failed to mount ninja project", "req", req, "error", err)
@@ -90,12 +92,13 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) (st
 	return mountedRootDir, utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
 }
 
-func (l *LocalProjectRunner) RunTask(task model.Task) model.TaskResult {
+func (l *LocalProjectRunner) RunTask(task *model.Task) model.TaskResult {
 	log.Debugw("Executing local task", "task cmd", task.Command)
 
+	task.Command = strings.Replace(task.Command, l.projectRootDir, l.mountedRootDir, -1)
 	cmd := &utils.Command{
 		Content: task.Command,
-		WorkDir: l.workDir,
+		WorkDir: l.mountedBuildDir,
 		Env:     make(map[string]string),
 	}
 
@@ -175,7 +178,7 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 
 }
 
-func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
+func (c *ContainerProjectRunner) RunTask(task *model.Task) model.TaskResult {
 	// 使用传入的上下文或创建带超时的上下文
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
@@ -388,7 +391,7 @@ func (r *TaskBufferedRunner) PrepareEnvironment(ctx context.Context, request *ap
 	return r.baseRunner.PrepareEnvironment(ctx, request)
 }
 
-func (r *TaskBufferedRunner) RunTask(task model.Task) model.TaskResult {
+func (r *TaskBufferedRunner) RunTask(task *model.Task) model.TaskResult {
 	// r.submitCommand(common.GenCmdKey(req.Project, req.CmdId))
 	return r.baseRunner.RunTask(task)
 }
@@ -461,7 +464,7 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 
 				// 执行命令
 				task.Command = content
-				taskRes := r.baseRunner.RunTask(task)
+				taskRes := r.baseRunner.RunTask(&task)
 				taskRes.StatusCode = api.RC_EXECUTOR_OK
 				// 任务执行成功：更新任务状态为完成.
 				if taskRes.ExitCode == 0 {
