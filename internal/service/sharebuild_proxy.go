@@ -41,6 +41,25 @@ func NewSharebuildProxyService(nm *network.NetManager, kvCli store.KVStoreClient
 }
 
 func (s *SharebuildProxyService) InitializeBuildEnv(ctx context.Context, req *api.InitializeBuildEnvRequest) (*api.InitializeBuildEnvResponse, error) {
+	// Validate the "project" field and its subfields
+	if req.Project == nil {
+		return nil, fmt.Errorf("project is required")
+	}
+
+	if req.Project.NinjaHost == "" {
+		return nil, fmt.Errorf("ninjaHost is required")
+	}
+
+	if req.Project.NinjaDir == "" {
+		return nil, fmt.Errorf("ninjaDir is required")
+	}
+
+	if req.Project.RootDir == "" {
+		return nil, fmt.Errorf("rootDir is required")
+	}
+
+	// TODO: add some validation here for the container image format if exists
+
 	// 1. 从活跃的节点中选取一批作为待编译项目的 executor
 	executors, err := s.pickActiveExecutors()
 	if err != nil {
