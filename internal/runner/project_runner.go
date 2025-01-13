@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,11 +137,14 @@ type ContainerProjectRunner struct {
 	containerImage  string
 	mountedRootDir  string
 	mountedBuildDir string
+	projectRootDir  string
 }
 
 func NewContainerProjectRunner(image string) *ContainerProjectRunner {
+	// Strip docker:// prefix if present
+	imageAddr := strings.TrimPrefix(image, "docker://")
 	return &ContainerProjectRunner{
-		containerImage: image,
+		containerImage: imageAddr,
 	}
 }
 
@@ -148,6 +152,7 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 	log.Infow("Preparing container environment for project", "project", req.String())
 	c.mountedRootDir = utils.GenMountedRootDir(req.Project.NinjaHost, req.Project.RootDir)
 	c.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
+	c.projectRootDir = req.Project.RootDir
 	// 1. 挂载项目
 	_, err := mountNinjaProject(ctx, req)
 	if err != nil {
@@ -175,6 +180,7 @@ func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 
+	task.Command = strings.Replace(task.Command, c.projectRootDir, c.mountedRootDir, -1)
 	log.Infow("Starting container task execution",
 		"cmdKey", task.CmdKey,
 		"command", task.Command,
@@ -192,6 +198,7 @@ func (c *ContainerProjectRunner) RunTask(task model.Task) model.TaskResult {
 	// 创建容器
 	containerID, err := c.createContainer(ctx, cli, task.Command)
 	if err != nil {
+		log.Errorw("Failed to create container", "cmdKey", task.CmdKey, "error", err)
 		return c.newErrorResult(task.CmdKey, "failed to create container", err)
 	}
 
