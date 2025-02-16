@@ -348,11 +348,13 @@ func (c *ContainerProjectRunner) Cleanup(ctx context.Context) error {
 // 基础 Runner 之上装饰调度功能，只不过这里的调度是抢占式
 type TaskBufferedRunner struct {
 	baseRunner  ProjectRunner
-	LocalQueue  chan model.Task     // 缓冲队列，存储任务
+	LocalQueue  chan model.Task     // 本地命令任务队列
+	RemoteQueue chan model.Task     // 非本地（其他远程节点）命令任务队列
 	stopChan    chan struct{}       // 停止所有 worker 的信号
 	KVStore     store.KVStoreClient // 存储客户端
 	wg          sync.WaitGroup      // 用于管理协程的退出
 	workerCount int                 // worker 数量
+	localIPv4   string              // 本机 IP 地址
 }
 
 // 初始化时自动启动 worker pool
@@ -368,9 +370,11 @@ func NewTaskBufferedRunner(baseRunner ProjectRunner, kvStore store.KVStoreClient
 	taskBufferedRunner := &TaskBufferedRunner{
 		baseRunner:  baseRunner,
 		LocalQueue:  make(chan model.Task, config.QUEUESIZE),
+		RemoteQueue: make(chan model.Task, config.QUEUESIZE),
 		stopChan:    make(chan struct{}),
 		KVStore:     kvStore,
 		workerCount: workerCount,
+		localIPv4:   utils.GetOutboundIP().String(),
 	}
 
 	// 启动所有 worker 协程
@@ -422,7 +426,29 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 		case <-r.stopChan:
 			fmt.Printf("[%s] Stopping worker\n", workerID)
 			return
-		case task := <-r.LocalQueue:
+		default:
+			// 优先执行本地任务
+			var task model.Task
+			var ok bool
+			select {
+			case task = <-r.LocalQueue:
+				ok = true
+			default:
+				// 本地任务为空，再尝试远程任务
+				select {
+				case task = <-r.RemoteQueue:
+					ok = true
+				default:
+					ok = false
+				}
+			}
+
+			if !ok {
+				// 当前无任务，避免 busy-wait
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
+
 			// Try claim task
 			result, err := r.TryClaimTask(context.Background(), task.CmdKey, workerID)
 			if err != nil {
@@ -499,9 +525,18 @@ func (r *TaskBufferedRunner) TryFinishTask(ctx context.Context, cmdKey, operator
 
 // 处理具体任务
 func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *model.Task, operator string) (model.TaskResult, error) {
+	// 根据 cmdKey 判断是否本机任务
+	isLocal := strings.HasPrefix(task.CmdKey, r.localIPv4)
+	var queue chan model.Task
+	if isLocal {
+		queue = r.LocalQueue
+	} else {
+		queue = r.RemoteQueue
+	}
+
 	// 提交任务并等待结果
 	select {
-	case r.LocalQueue <- *task:
+	case queue <- *task:
 		select {
 		case result := <-task.ResultChan:
 			return result, result.Err
