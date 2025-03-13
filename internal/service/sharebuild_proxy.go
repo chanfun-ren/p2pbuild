@@ -61,7 +61,7 @@ func (s *SharebuildProxyService) InitializeBuildEnv(ctx context.Context, req *ap
 	// TODO: add some validation here for the container image format if exists
 
 	// 1. 从活跃的节点中选取一批作为待编译项目的 executor
-	executors, err := s.pickActiveExecutors()
+	executors, err := s.pickActiveExecutors(int(req.WorkerNum))
 	if err != nil {
 		log.Errorw("failed to pick active executors", "err", err)
 		return NewIBEResponse(api.RC_PROXY_INTERNAL_ERROR, "Failed to pick active executors", nil), nil
@@ -80,12 +80,12 @@ func (s *SharebuildProxyService) InitializeBuildEnv(ctx context.Context, req *ap
 }
 
 // 获取活跃的 executors
-func (s *SharebuildProxyService) pickActiveExecutors() ([]*api.Peer, error) {
+func (s *SharebuildProxyService) pickActiveExecutors(workerNum int) ([]*api.Peer, error) {
 	activePeers := s.NetManager.PeerList()
 
 	// 确定要取的 executor 数量
-	count := config.EXECUTOR_GROUP_SIZE
-	if len(activePeers) < config.EXECUTOR_GROUP_SIZE {
+	count := workerNum
+	if len(activePeers) < count {
 		count = len(activePeers)
 	}
 	if count == 0 {

@@ -9,9 +9,6 @@ import (
 	"github.com/chanfun-ren/executor/pkg/logging"
 )
 
-// proxy config
-const EXECUTOR_GROUP_SIZE = 3
-
 // sharebuild daemon config
 const GRPC_PORT = 50051 // TODO: 更优雅的方式 <- 配置文件导入
 
