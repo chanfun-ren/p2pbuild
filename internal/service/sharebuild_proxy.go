@@ -29,7 +29,7 @@ type SharebuildProxyService struct {
 	api.UnimplementedShareBuildProxyServer
 	NetManager         *network.NetManager
 	projectToExecutors sync.Map // map[string][]*api.Peer
-	grpcClients        sync.Map // map[*api.Project][]*grpc.ClientConn	// TODO: 复用 client: map[string]*grpc.ClientConn
+	grpcClients        sync.Map // map[string]*grpc.ClientConn
 	kvStoreClient      store.KVStoreClient
 }
 
@@ -106,9 +106,9 @@ func (s *SharebuildProxyService) pickActiveExecutors(workerNum int) ([]*api.Peer
 }
 
 // 获取或创建 gRPC 客户端连接
-func (s *SharebuildProxyService) getOrCreateGrpcConnsForProject(project *api.Project, executors []*api.Peer) ([]*grpc.ClientConn, error) {
+func (s *SharebuildProxyService) getOrCreateGrpcConnsForProject(projectKey string, executors []*api.Peer) ([]*grpc.ClientConn, error) {
 	// 尝试从缓存中获取连接
-	if conns, ok := s.grpcClients.Load(project); ok {
+	if conns, ok := s.grpcClients.Load(projectKey); ok {
 		return conns.([]*grpc.ClientConn), nil
 	}
 
@@ -129,14 +129,14 @@ func (s *SharebuildProxyService) getOrCreateGrpcConnsForProject(project *api.Pro
 	}
 
 	// 将连接缓存
-	s.grpcClients.Store(project, conns)
+	s.grpcClients.Store(projectKey, conns)
 	return conns, nil
 }
 
 // 准备环境
 func (s *SharebuildProxyService) prepareEnvironments(executors []*api.Peer, req *api.InitializeBuildEnvRequest) ([]*api.Peer, error) {
 	// 获取或创建 gRPC 连接
-	conns, err := s.getOrCreateGrpcConnsForProject(req.Project, executors)
+	conns, err := s.getOrCreateGrpcConnsForProject(common.GenProjectKey(req.Project), executors)
 	if err != nil {
 		return []*api.Peer{}, err
 	}
@@ -157,7 +157,7 @@ func (s *SharebuildProxyService) prepareEnvironments(executors []*api.Peer, req 
 		}
 		ready_executors = append(ready_executors, executors[i])
 
-		log.Infow("Environment prepared successfully for executor", "executor", executors[i])
+		// log.Infow("Environment prepared successfully for executor", "executor", executors[i])
 	}
 	// if no ready executor, return err
 	if len(ready_executors) == 0 {
@@ -193,7 +193,7 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 	log.Debugw("Command stored in KV store", "key", key, "fields", fields)
 
 	// 2. 获取 project 对应的 executors
-	log.Debugw("ForwardAndExecute projectToExecutors", "projectToExecutors", utils.MapToString(&s.projectToExecutors))
+	// log.Debugw("ForwardAndExecute projectToExecutors", "projectToExecutors", utils.MapToString(&s.projectToExecutors))
 	res, ok := s.projectToExecutors.Load(common.GenProjectKey(req.Project))
 	if !ok {
 		return NewFAEResponse(api.RC_PROXY_NO_AVAILABLE_EXECUTOR, "No executor found for project"), nil
@@ -205,7 +205,7 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 
 	// 3. 发起 SubmitAndExecute 调用
 	// 获取或创建 gRPC 连接
-	conns, err := s.getOrCreateGrpcConnsForProject(req.Project, executors)
+	conns, err := s.getOrCreateGrpcConnsForProject(common.GenProjectKey(req.Project), executors)
 	if err != nil {
 		return NewFAEResponse(api.RC_PROXY_INTERNAL_ERROR, fmt.Sprintf("Failed to create gRPC connections: %v", err)), nil
 	}
@@ -233,7 +233,7 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 				log.Errorw("Failed to foward command on executor", "executor", executors[i].String(), "err", err)
 				resultChan <- nil // proxy foward 内部错误
 			} else {
-				log.Infow("Successfully FowardedAndExecute command to executor", "executor", executors[i].String())
+				// log.Infow("Successfully FowardedAndExecute command to executor", "executor", executors[i].String())
 				resultChan <- &ExecutorResult{
 					Executor: executors[i], // 返回 foward 成功的 executor
 					Response: res,          // 返回实际的执行结果
@@ -319,7 +319,7 @@ func (s *SharebuildProxyService) ClearBuildEnv(ctx context.Context, req *api.Cle
 	}
 
 	// 2. 通知每个 executor 清理环境
-	conns, err := s.getOrCreateGrpcConnsForProject(req.Project, executors)
+	conns, err := s.getOrCreateGrpcConnsForProject(common.GenProjectKey(req.Project), executors)
 	if err != nil {
 		return NewCBEResponse(api.RC_PROXY_INTERNAL_ERROR, fmt.Sprintf("Failed to create gRPC connections: %v", err)), nil
 	}
