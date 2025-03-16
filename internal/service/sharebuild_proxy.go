@@ -177,20 +177,20 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 	// - status: "unclaimed", "claimed", "done"
 	// - content: Actual command content
 	// 1. 将命令存储到公共存储组件
-	key := common.GenCmdKey(req.Project, req.CmdId)
+	taskKey := common.GenTaskKey(req.Project, req.CmdId)
 	cmdContent := req.CmdContent
 
 	fields := map[string]interface{}{
 		"status":  "unclaimed",
 		"content": cmdContent,
 	}
-	err := s.kvStoreClient.HSetWithTTL(ctx, key, fields, config.CMDTTL)
+	err := s.kvStoreClient.HSetWithTTL(ctx, taskKey, fields, config.CMDTTL)
 	if err != nil {
-		log.Errorw("Failed to store command", "key", key, "fields", fields, "err", err)
+		log.Errorw("Failed to store command", "taskKey", taskKey, "fields", fields, "err", err)
 		return NewFAEResponse(api.RC_PROXY_KVSTORE_FAILED, "Failed to store command"), nil
 	}
 
-	log.Debugw("Command stored in KV store", "key", key, "fields", fields)
+	log.Debugw("Command stored in KV store", "taskKey", taskKey, "fields", fields)
 
 	// 2. 获取 project 对应的 executors
 	// log.Debugw("ForwardAndExecute projectToExecutors", "projectToExecutors", utils.MapToString(&s.projectToExecutors))
@@ -272,8 +272,10 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 			Code:    api.RC_PROXY_ALL_EXECUTOR_FAILED,
 			Message: "Failed to execute task on all executors",
 		}
+		log.Errorw("Failed to execute task on all executors", "executors", executors)
 	}
 
+	log.Infow("Cmd done", "CmdId", req.CmdId, "executor", successfulExecutor.Ip)
 	return NewFAEResponseWithExecutor(finalStatus, successfulExecutor, req.CmdId, stdOut, stdErr), nil
 
 }

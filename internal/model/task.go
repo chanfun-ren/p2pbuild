@@ -43,7 +43,7 @@ func ParseTaskStatus(s string) (TaskStatus, error) {
 }
 
 type Task struct {
-	CmdKey     string
+	TaskKey    string
 	Command    string
 	ResultChan chan TaskResult // 每个任务自己的结果通道
 }
@@ -52,7 +52,7 @@ type TaskResult struct {
 	StatusCode api.RC
 	Message    string
 
-	CmdKey   string
+	TaskKey  string
 	Status   string
 	StdOut   string
 	StdErr   string
@@ -62,9 +62,9 @@ type TaskResult struct {
 
 // Task 的字符串表示
 func (t Task) String() string {
-	return fmt.Sprintf("{CmdKey: %s, Command: %s}", t.CmdKey, t.Command)
+	return fmt.Sprintf("{TaskKey: %s, Command: %s}", t.TaskKey, t.Command)
 }
 
 func (t TaskResult) String() string {
-	return fmt.Sprintf("{CmdKey: %s, Status: %s, StdOut: %s, StdErr: %s, Err: %v, ExitCode: %d}", t.CmdKey, t.Status, t.StdOut, t.StdErr, t.Err, t.ExitCode)
+	return fmt.Sprintf("{Status: %s, StdOut: %s, StdErr: %s, Err: %v, ExitCode: %d}", t.Status, t.StdOut, t.StdErr, t.Err, t.ExitCode)
 }

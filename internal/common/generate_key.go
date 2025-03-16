@@ -10,6 +10,6 @@ func GenProjectKey(proj *api.Project) string {
 	return fmt.Sprintf("%s|%s", proj.NinjaHost, proj.RootDir)
 }
 
-func GenCmdKey(proj *api.Project, cmdId string) string {
+func GenTaskKey(proj *api.Project, cmdId string) string {
 	return fmt.Sprintf("%s:%s", GenProjectKey(proj), cmdId)
 }

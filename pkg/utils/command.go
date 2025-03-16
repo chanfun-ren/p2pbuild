@@ -28,11 +28,11 @@ type CommandResult struct {
 // ExecCommand 执行命令并返回结果
 func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 	log := logging.NewComponentLogger("internal")
-	log.Infow("Executing command",
-		"command", cmd.Content,
-		"workDir", cmd.WorkDir,
-		"env", cmd.Env,
-	)
+	// log.Debugw("Executing command",
+	// 	"command", cmd.Content,
+	// 	"workDir", cmd.WorkDir,
+	// 	"env", cmd.Env,
+	// )
 
 	// Prepare command
 	execCmd := exec.CommandContext(ctx, "sh", "-c", cmd.Content)
@@ -88,9 +88,10 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 				result.ExitCode = -1
 				result.Error = fmt.Sprintf("%v: %s", err, stderr.String())
 			}
+			log.Errorw("Command executed with error", "result", result)
 		}
 
-		log.Infow("Command executed", "result", result)
+		// log.Debugw("Command executed", "result", result)
 
 		return result
 	}

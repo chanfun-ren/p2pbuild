@@ -88,18 +88,18 @@ func (s *ShareBuildExecutorService) SubmitAndExecute(ctx context.Context, req *a
 		return NewSAEResponse(api.RC_EXECUTOR_INVALID_ARGUMENT, "invalid project runner type", req.CmdId, "", ""), nil
 	}
 
-	cmdKey := common.GenCmdKey(req.Project, req.CmdId)
-	log.Infow("SubmitAndExecute", "cmdKey", cmdKey)
+	TaskKey := common.GenTaskKey(req.Project, req.CmdId)
 
-	// Submit cmdKey to queue and wait for result
+	// Submit TaskKey to queue and wait for result
 	resultChan := make(chan model.TaskResult, 1)
 	task := model.Task{
-		CmdKey:     cmdKey,
+		TaskKey:    TaskKey,
 		ResultChan: resultChan,
 	}
 
 	taskRes, err := taskRunner.SubmitAndWaitTaskRes(ctx, &task, executorId)
 	if err != nil {
+		log.Errorw("failed to execute task", "task", task, "err", err)
 		return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, "", ""), nil
 	}
 

@@ -125,7 +125,7 @@ var developmentEncoderConfig = zapcore.EncoderConfig{
 	StacktraceKey:  "S",
 	LineEnding:     zapcore.DefaultLineEnding,
 	EncodeLevel:    zapcore.CapitalColorLevelEncoder,
-	EncodeTime:     zapcore.TimeEncoderOfLayout("2006-01-02T15:04:05"),
+	EncodeTime:     zapcore.TimeEncoderOfLayout("15:04:05.000"), // 关键改动点
 	EncodeDuration: zapcore.StringDurationEncoder,
 	EncodeCaller:   zapcore.ShortCallerEncoder,
 }

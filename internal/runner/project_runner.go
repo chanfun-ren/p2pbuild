@@ -93,7 +93,7 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) (st
 }
 
 func (l *LocalProjectRunner) RunTask(task *model.Task) model.TaskResult {
-	log.Debugw("Executing local task", "task cmd", task.Command)
+	// log.Debugw("Executing local task", "task cmd", task.Command)
 
 	task.Command = strings.Replace(task.Command, l.projectRootDir, l.mountedRootDir, -1)
 	cmd := &utils.Command{
@@ -115,7 +115,7 @@ func (l *LocalProjectRunner) RunTask(task *model.Task) model.TaskResult {
 	}
 
 	res := model.TaskResult{
-		CmdKey:   task.CmdKey,
+		TaskKey:  task.TaskKey,
 		StdOut:   cmdRes.Stdout,
 		StdErr:   cmdRes.Stderr,
 		Err:      err,
@@ -185,7 +185,7 @@ func (c *ContainerProjectRunner) RunTask(task *model.Task) model.TaskResult {
 
 	task.Command = strings.Replace(task.Command, c.projectRootDir, c.mountedRootDir, -1)
 	log.Infow("Starting container task execution",
-		"cmdKey", task.CmdKey,
+		"TaskKey", task.TaskKey,
 		"command", task.Command,
 		"mountedRootDir", c.mountedRootDir,
 		"mountedBuildDir", c.mountedBuildDir,
@@ -194,15 +194,15 @@ func (c *ContainerProjectRunner) RunTask(task *model.Task) model.TaskResult {
 	// 创建 Docker 客户端
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return c.newErrorResult(task.CmdKey, "failed to create docker client", err)
+		return c.newErrorResult(task.TaskKey, "failed to create docker client", err)
 	}
 	defer cli.Close()
 
 	// 创建容器
 	containerID, err := c.createContainer(ctx, cli, task.Command)
 	if err != nil {
-		log.Errorw("Failed to create container", "cmdKey", task.CmdKey, "error", err)
-		return c.newErrorResult(task.CmdKey, "failed to create container", err)
+		log.Errorw("Failed to create container", "TaskKey", task.TaskKey, "error", err)
+		return c.newErrorResult(task.TaskKey, "failed to create container", err)
 	}
 
 	// 确保容器被清理
@@ -213,7 +213,7 @@ func (c *ContainerProjectRunner) RunTask(task *model.Task) model.TaskResult {
 
 	// 启动容器
 	if err := cli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		return c.newErrorResult(task.CmdKey, "failed to start container", err)
+		return c.newErrorResult(task.TaskKey, "failed to start container", err)
 	}
 
 	// 等待容器执行完成
@@ -221,21 +221,21 @@ func (c *ContainerProjectRunner) RunTask(task *model.Task) model.TaskResult {
 	var status container.WaitResponse
 	select {
 	case err := <-errCh:
-		return c.newErrorResult(task.CmdKey, "container wait failed", err)
+		return c.newErrorResult(task.TaskKey, "container wait failed", err)
 	case status = <-statusCh:
 		// 继续处理
 	case <-ctx.Done():
-		return c.newErrorResult(task.CmdKey, "container execution timeout", ctx.Err())
+		return c.newErrorResult(task.TaskKey, "container execution timeout", ctx.Err())
 	}
 
 	// 获取容器日志
 	stdout, stderr, err := c.getContainerLogs(ctx, cli, containerID)
 	if err != nil {
-		return c.newErrorResult(task.CmdKey, "failed to get container logs", err)
+		return c.newErrorResult(task.TaskKey, "failed to get container logs", err)
 	}
 
 	res := model.TaskResult{
-		CmdKey:   task.CmdKey,
+		TaskKey:  task.TaskKey,
 		StdOut:   stdout,
 		StdErr:   stderr,
 		Err:      nil,
@@ -313,9 +313,9 @@ func (c *ContainerProjectRunner) cleanupContainer(ctx context.Context, cli *clie
 	}
 }
 
-func (c *ContainerProjectRunner) newErrorResult(cmdKey string, msg string, err error) model.TaskResult {
+func (c *ContainerProjectRunner) newErrorResult(TaskKey string, msg string, err error) model.TaskResult {
 	return model.TaskResult{
-		CmdKey:   cmdKey,
+		TaskKey:  TaskKey,
 		StdOut:   "",
 		StdErr:   fmt.Sprintf("%s: %v", msg, err),
 		Err:      err,
@@ -347,14 +347,16 @@ func (c *ContainerProjectRunner) Cleanup(ctx context.Context) error {
 
 // 基础 Runner 之上装饰调度功能，只不过这里的调度是抢占式
 type TaskBufferedRunner struct {
-	baseRunner  ProjectRunner
-	LocalQueue  chan model.Task     // 本地命令任务队列
-	RemoteQueue chan model.Task     // 非本地（其他远程节点）命令任务队列
-	stopChan    chan struct{}       // 停止所有 worker 的信号
-	KVStore     store.KVStoreClient // 存储客户端
-	wg          sync.WaitGroup      // 用于管理协程的退出
-	workerCount int                 // worker 数量
-	localIPv4   string              // 本机 IP 地址
+	baseRunner         ProjectRunner
+	LocalQueue         chan model.Task     // 本地命令任务队列
+	RemoteQueue        chan model.Task     // 非本地（其他远程节点）命令任务队列
+	stopChan           chan struct{}       // 停止所有 worker 的信号
+	KVStore            store.KVStoreClient // 存储客户端
+	wg                 sync.WaitGroup      // 用于管理协程的退出
+	workerCount        int                 // worker 数量
+	localIPv4          string              // 本机 IP 地址
+	ReceivedtaskCount  int                 // 接收到的总的任务数量
+	PreemptedTaskCount int                 // 抢占成功的任务数量
 }
 
 // 初始化时自动启动 worker pool
@@ -368,13 +370,15 @@ func NewTaskBufferedRunner(baseRunner ProjectRunner, kvStore store.KVStoreClient
 
 	// 初始化 TaskBufferedRunner
 	taskBufferedRunner := &TaskBufferedRunner{
-		baseRunner:  baseRunner,
-		LocalQueue:  make(chan model.Task, config.QUEUESIZE),
-		RemoteQueue: make(chan model.Task, config.QUEUESIZE),
-		stopChan:    make(chan struct{}),
-		KVStore:     kvStore,
-		workerCount: workerCount,
-		localIPv4:   utils.GetOutboundIP().String(),
+		baseRunner:         baseRunner,
+		LocalQueue:         make(chan model.Task, config.QUEUESIZE),
+		RemoteQueue:        make(chan model.Task, config.QUEUESIZE),
+		stopChan:           make(chan struct{}),
+		KVStore:            kvStore,
+		workerCount:        workerCount,
+		localIPv4:          utils.GetOutboundIP().String(),
+		ReceivedtaskCount:  0,
+		PreemptedTaskCount: 0,
 	}
 
 	// 启动所有 worker 协程
@@ -396,12 +400,13 @@ func (r *TaskBufferedRunner) PrepareEnvironment(ctx context.Context, request *ap
 }
 
 func (r *TaskBufferedRunner) RunTask(task *model.Task) model.TaskResult {
-	// r.submitCommand(common.GenCmdKey(req.Project, req.CmdId))
 	return r.baseRunner.RunTask(task)
 }
 
 func (r *TaskBufferedRunner) Cleanup(ctx context.Context) error {
-	return r.baseRunner.Cleanup(ctx)
+	err := r.baseRunner.Cleanup(ctx)
+	log.Infow("ProjectRunner free...", "ReceivedtaskCount", r.ReceivedtaskCount, "PreemptedTaskCount", r.PreemptedTaskCount)
+	return err
 }
 
 // 启动 Worker
@@ -411,11 +416,6 @@ func (r *TaskBufferedRunner) startWorkers() {
 		go r.worker(fmt.Sprintf("worker-%d", i+1))
 	}
 }
-
-// 提交命令到队列
-// func (r *TaskBufferedRunner) submitCommand(cmdKey string) {
-// 	r.localQueue <- cmdKey
-// }
 
 // Worker 逻辑
 func (r *TaskBufferedRunner) worker(workerID string) {
@@ -450,12 +450,12 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 			}
 
 			// Try claim task
-			result, err := r.TryClaimTask(context.Background(), task.CmdKey, workerID)
+			result, err := r.TryClaimTask(context.Background(), task.TaskKey, workerID)
 			if err != nil {
 				task.ResultChan <- model.TaskResult{
-					CmdKey: task.CmdKey,
-					Status: "error",
-					Err:    err,
+					TaskKey: task.TaskKey,
+					Status:  "error",
+					Err:     err,
 				}
 				continue
 			}
@@ -477,13 +477,14 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 					Message:    "invalid arguments",
 				}
 			case 0: // 成功 claimed
+				r.PreemptedTaskCount++
 				// 从 redis 获取具体命令内容
-				content, err := r.KVStore.HGet(context.Background(), task.CmdKey, "content")
+				content, err := r.KVStore.HGet(context.Background(), task.TaskKey, "content")
 				if err != nil {
 					task.ResultChan <- model.TaskResult{
-						CmdKey: task.CmdKey,
-						Status: "error",
-						Err:    fmt.Errorf("failed to get command content: %v", err),
+						TaskKey: task.TaskKey,
+						Status:  "error",
+						Err:     fmt.Errorf("failed to get command content: %v", err),
 					}
 					continue
 				}
@@ -494,9 +495,9 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 				taskRes.StatusCode = api.RC_EXECUTOR_OK
 				// 任务执行成功：更新任务状态为完成.
 				if taskRes.ExitCode == 0 {
-					r.TryFinishTask(context.Background(), task.CmdKey, workerID)
+					r.TryFinishTask(context.Background(), task.TaskKey, workerID)
 				} else { // fallback
-					r.UnclaimeTask(context.Background(), task.CmdKey, workerID)
+					r.UnclaimeTask(context.Background(), task.TaskKey, workerID)
 				}
 				task.ResultChan <- taskRes
 			default:
@@ -511,22 +512,22 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 	}
 }
 
-func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
-	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
+func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
+	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
 }
 
-func (r *TaskBufferedRunner) UnclaimeTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
-	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Claimed, model.Unclaimed, operator, config.TASKTTL)
+func (r *TaskBufferedRunner) UnclaimeTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
+	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Claimed, model.Unclaimed, operator, config.TASKTTL)
 }
 
-func (r *TaskBufferedRunner) TryFinishTask(ctx context.Context, cmdKey, operator string) (store.ClaimCmdResult, error) {
-	return r.KVStore.ClaimCmd(ctx, cmdKey, model.Claimed, model.Done, operator, config.TASKTTL)
+func (r *TaskBufferedRunner) TryFinishTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
+	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Claimed, model.Done, operator, config.TASKTTL)
 }
 
 // 处理具体任务
 func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *model.Task, operator string) (model.TaskResult, error) {
-	// 根据 cmdKey 判断是否本机任务
-	isLocal := strings.HasPrefix(task.CmdKey, r.localIPv4)
+	// 根据 TaskKey 判断是否本机任务
+	isLocal := strings.HasPrefix(task.TaskKey, r.localIPv4)
 	var queue chan model.Task
 	if isLocal {
 		queue = r.LocalQueue
@@ -537,6 +538,7 @@ func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *mod
 	// 提交任务并等待结果
 	select {
 	case queue <- *task:
+		r.ReceivedtaskCount++
 		select {
 		case result := <-task.ResultChan:
 			return result, result.Err
