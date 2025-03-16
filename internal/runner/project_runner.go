@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/chanfun-ren/executor/api"
@@ -356,7 +357,7 @@ type TaskBufferedRunner struct {
 	workerCount        int                 // worker 数量
 	localIPv4          string              // 本机 IP 地址
 	ReceivedtaskCount  int                 // 接收到的总的任务数量
-	PreemptedTaskCount int                 // 抢占成功的任务数量
+	PreemptedTaskCount atomic.Uint64       // 抢占成功的任务数量
 }
 
 // 初始化时自动启动 worker pool
@@ -378,7 +379,7 @@ func NewTaskBufferedRunner(baseRunner ProjectRunner, kvStore store.KVStoreClient
 		workerCount:        workerCount,
 		localIPv4:          utils.GetOutboundIP().String(),
 		ReceivedtaskCount:  0,
-		PreemptedTaskCount: 0,
+		PreemptedTaskCount: atomic.Uint64{},
 	}
 
 	// 启动所有 worker 协程
@@ -405,7 +406,7 @@ func (r *TaskBufferedRunner) RunTask(task *model.Task) model.TaskResult {
 
 func (r *TaskBufferedRunner) Cleanup(ctx context.Context) error {
 	err := r.baseRunner.Cleanup(ctx)
-	log.Infow("ProjectRunner free...", "ReceivedtaskCount", r.ReceivedtaskCount, "PreemptedTaskCount", r.PreemptedTaskCount)
+	log.Infow("ProjectRunner free...", "ReceivedtaskCount", r.ReceivedtaskCount, "PreemptedTaskCount", r.PreemptedTaskCount.Load())
 	return err
 }
 
@@ -477,7 +478,7 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 					Message:    "invalid arguments",
 				}
 			case 0: // 成功 claimed
-				r.PreemptedTaskCount++
+				r.PreemptedTaskCount.Add(1)
 				// 从 redis 获取具体命令内容
 				content, err := r.KVStore.HGet(context.Background(), task.TaskKey, "content")
 				if err != nil {
