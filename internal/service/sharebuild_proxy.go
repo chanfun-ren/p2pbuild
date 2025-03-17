@@ -220,6 +220,10 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 		go func(i int, conn *grpc.ClientConn) {
 			defer wg.Done()
 
+			// local executor 随机 2-3 ms 延迟(diff: 2.39ms, 2.46ms), 保证 Redis 争抢任务公平
+			// if strings.HasPrefix(conn.Target(), utils.GetOutboundIP().String()) {
+			// 	time.Sleep(time.Duration(rand.Intn(1000)+9000) * time.Microsecond)
+			// }
 			client := api.NewShareBuildExecutorClient(conn)
 
 			// 调用 SubmitAndExecute 方法
@@ -340,6 +344,7 @@ func (s *SharebuildProxyService) ClearBuildEnv(ctx context.Context, req *api.Cle
 	}
 	// 3. 删除 project 对应的 executors
 	s.projectToExecutors.Delete(common.GenProjectKey(req.Project))
+	s.grpcClients.Delete(common.GenProjectKey(req.Project))
 	return NewCBEResponse(api.RC_PROXY_OK, "Environment cleared successfully"), nil
 }
 
