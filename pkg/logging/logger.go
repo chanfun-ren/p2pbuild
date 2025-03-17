@@ -32,7 +32,7 @@ func NewLogger(level string, development bool) *zap.SugaredLogger {
 			Development:      true,
 			Encoding:         encodingConsole,
 			EncoderConfig:    developmentEncoderConfig,
-			OutputPaths:      outputStderr,
+			OutputPaths:      []string{"p2pbuild_dev.log", "stdout"},
 			ErrorOutputPaths: outputStderr,
 		}
 	} else {
@@ -40,7 +40,7 @@ func NewLogger(level string, development bool) *zap.SugaredLogger {
 			Level:            zap.NewAtomicLevelAt(parseLevel(level)),
 			Encoding:         encodingJSON,
 			EncoderConfig:    productionEncoderConfig,
-			OutputPaths:      []string{"executor.log", "stdout"},
+			OutputPaths:      []string{"p2pbuild.log", "stdout"},
 			ErrorOutputPaths: outputStderr,
 		}
 	}

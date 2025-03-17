@@ -407,6 +407,7 @@ func (r *TaskBufferedRunner) RunTask(task *model.Task) model.TaskResult {
 func (r *TaskBufferedRunner) Cleanup(ctx context.Context) error {
 	err := r.baseRunner.Cleanup(ctx)
 	log.Infow("ProjectRunner free...", "ReceivedtaskCount", r.ReceivedtaskCount, "PreemptedTaskCount", r.PreemptedTaskCount.Load())
+	r.Stop()
 	return err
 }
 
@@ -448,6 +449,8 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 				// 当前无任务，避免 busy-wait
 				time.Sleep(50 * time.Millisecond)
 				continue
+				// log.Debugw("No task to process...", "workerID", workerID)
+				// continue
 			}
 
 			// Try claim task
