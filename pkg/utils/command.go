@@ -88,7 +88,7 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 				result.ExitCode = -1
 				result.Error = fmt.Sprintf("%v: %s", err, stderr.String())
 			}
-			log.Errorw("Command executed with error", "result", result)
+			log.Errorw("Command executed with error", "result", result, "cmd", cmd)
 		}
 
 		// log.Debugw("Command executed", "result", result)

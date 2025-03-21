@@ -32,3 +32,5 @@ var QUEUESIZE = 1024
 
 var CMDTTL = 10 * time.Minute
 var TASKTTL = 5 * time.Minute
+
+const ExecutorHome = "/home/executor"

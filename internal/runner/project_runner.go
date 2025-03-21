@@ -42,18 +42,30 @@ func NewScheduledProjectRunner(containerImage string, kvStoreClient store.KVStor
 var log = logging.NewComponentLogger("runner")
 
 type LocalProjectRunner struct {
-	mountedRootDir  string
+	mountedRootDir  string // executor 挂载的项目主目录
 	mountedBuildDir string
-	projectRootDir  string
+	projectRootDir  string // 客户端待编译项目主目录，同时也是 executor 的 workspace
+	isLocalExecutor bool
 }
 
 func NewLocalProjectRunner() *LocalProjectRunner {
-	return &LocalProjectRunner{}
+	return &LocalProjectRunner{
+		isLocalExecutor: false,
+	}
 }
 
 func (l *LocalProjectRunner) PrepareEnvironment(ctx context.Context, req *api.PrepareLocalEnvRequest) error {
 	log.Infow("Preparing local environment for project", "project", req.String())
 	l.projectRootDir = req.Project.RootDir
+
+	if strings.HasPrefix(req.Project.NinjaHost, utils.GetOutboundIP().String()) {
+		// local executor
+		l.isLocalExecutor = true
+		l.mountedRootDir = req.Project.RootDir
+		l.mountedBuildDir = req.Project.NinjaDir
+		return nil
+	}
+
 	l.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
 	mountedRootDir, err := mountNinjaProject(ctx, req)
 	if err != nil {
@@ -89,14 +101,48 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) (st
 		return "", fmt.Errorf("failed to create mount directory: %w", err)
 	}
 
-	log.Debugw("directory created successfully", "mountedRootDir", mountedRootDir)
-	return mountedRootDir, utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
+	err = utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
+	if err != nil {
+		log.Errorw("Failed to mount nfs", "mountedRootDir", mountedRootDir, "error", err)
+		return "", err
+	}
+
+	// 本地生成一个和客户端项目主目录同名路径，将其映射到挂载路径
+	err = utils.MapWorkspace(mountedRootDir, rootDir)
+	if err != nil {
+		log.Debugw("Failed to map workspace", "mountedRootDir", mountedRootDir, "rootDir", rootDir, "error", err)
+		return "", err
+	}
+
+	log.Infow("Workspace created successfully", "mountedRootDir", mountedRootDir, "WorkspaceDir", rootDir)
+
+	return mountedRootDir, nil
+}
+
+func umountNinjaProject(mountedRootDir, projectRootDir string) error {
+	// Add timeout context
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := utils.UnmountNFS(ctx, mountedRootDir)
+	if err != nil {
+		log.Errorw("Failed to unmount nfs", "mountedRootDir", mountedRootDir, "error", err)
+		return err
+	}
+
+	err = utils.ClearWorkspace(projectRootDir)
+	if err != nil {
+		log.Errorw("Failed to clear workspace", "projectRootDir", projectRootDir, "error", err)
+		return err
+	}
+	return nil
 }
 
 func (l *LocalProjectRunner) RunTask(task *model.Task) model.TaskResult {
 	// log.Debugw("Executing local task", "task cmd", task.Command)
 
-	task.Command = strings.Replace(task.Command, l.projectRootDir, l.mountedRootDir, -1)
+	// map workspace 后原理上不再需要更换路径
+	// task.Command = strings.Replace(task.Command, l.projectRootDir, l.mountedRootDir, -1)
 	cmd := &utils.Command{
 		Content: task.Command,
 		WorkDir: l.mountedBuildDir,
@@ -129,14 +175,13 @@ func (l *LocalProjectRunner) RunTask(task *model.Task) model.TaskResult {
 }
 
 func (l *LocalProjectRunner) Cleanup(ctx context.Context) error {
-	err := utils.UnmountNFS(ctx, l.mountedRootDir)
-	if err != nil {
-		log.Errorw("Failed to unmount nfs", "mountedRootDir", l.mountedRootDir, "error", err)
-		return err
+	if l.isLocalExecutor {
+		return nil
 	}
-	return nil
+	return umountNinjaProject(l.mountedRootDir, l.projectRootDir)
 }
 
+// TODO: 本地 executor 统一本地执行用 localProjectRunner 的执行逻辑, 不用 container, 提高效率
 type ContainerProjectRunner struct {
 	containerImage  string
 	mountedRootDir  string
@@ -264,7 +309,7 @@ func (c *ContainerProjectRunner) createContainer(ctx context.Context, cli *clien
 		Mounts: []mount.Mount{{
 			Type:   mount.TypeBind,
 			Source: c.mountedRootDir,
-			Target: c.mountedRootDir,
+			Target: c.mountedRootDir, // TODO: 变更为 projectRootDir
 		}},
 		Resources: container.Resources{
 			Memory:    2 * 1024 * 1024 * 1024, // 2GB

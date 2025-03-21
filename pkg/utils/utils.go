@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chanfun-ren/executor/pkg/config"
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/distribution/reference"
 
@@ -140,6 +141,40 @@ func MapToString(m *sync.Map) string {
 	return strings.Join(result, ", ")
 }
 
+// TODO: container 执行的方式，将 projRootDir 作为映射目录
+func MapWorkspace(mountedDir, projRootDir string) error {
+	// 本地生成一个和客户端项目主目录同名路径，将其映射到挂载路径
+	// 兼容客户端待编译文件内容中包含的头文件为绝对路径的情况
+	// sudo mkdir -p /home/lab0/src_code/qt-everywhere-src-6.8.0
+	// sudo mount --bind /home/executor/.ninja-mounts/qt-everywhere-src-6.8.0 /home/lab0/src_code/qt-everywhere-src-6.8.0
+	os.MkdirAll(projRootDir, os.ModePerm)
+	cmd := &Command{
+		Content: fmt.Sprintf("mount --bind %s %s", mountedDir, projRootDir),
+		WorkDir: "",
+		Env:     nil,
+	}
+
+	res := ExecCommand(context.Background(), cmd)
+	if res.ExitCode != 0 {
+		return fmt.Errorf("failed to map workspace: %s", res.Stderr)
+	}
+	return nil
+}
+
+func ClearWorkspace(projRootDir string) error {
+	cmd := &Command{
+		Content: fmt.Sprintf("umount %s", projRootDir),
+		WorkDir: "",
+		Env:     nil,
+	}
+
+	res := ExecCommand(context.Background(), cmd)
+	if res.ExitCode != 0 {
+		return fmt.Errorf("failed to clear workspace: %s", res.Stderr)
+	}
+	return nil
+}
+
 // TODO: NFS操作：目录被其他进程打开时，处理 `device is busy` 错误
 // MountNFS 挂载 NFS 共享目录
 func MountNFS(ctx context.Context, host, srcDir, dstDir string) error {
@@ -168,14 +203,12 @@ func MountNFS(ctx context.Context, host, srcDir, dstDir string) error {
 }
 
 func GenMountedRootDir(ninjaHost string, projRootDir string) string {
-	// rootDir := strings.TrimSuffix(projRootDir, "/")
-	// return config.GetExecutorHome() + ninjaHost + rootDir
-	return filepath.Join(os.Getenv("HOME"), ".ninja-mounts", ninjaHost, projRootDir)
+	rootDir := strings.TrimSuffix(projRootDir, "/")
+	return filepath.Join(config.ExecutorHome, ninjaHost, rootDir)
 }
 
 func GetMountedBuildDir(ninjaHost string, ninjaBuildDir string) string {
-	// return config.GetExecutorHome() + ninjaHost + ninjaBuildDir
-	return filepath.Join(os.Getenv("HOME"), ".ninja-mounts", ninjaHost, ninjaBuildDir)
+	return filepath.Join(config.ExecutorHome, ninjaHost, ninjaBuildDir)
 }
 
 // UnmountNFS 取消挂载 NFS 共享目录
