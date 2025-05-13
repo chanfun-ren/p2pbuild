@@ -97,9 +97,9 @@ func (s *ShareBuildExecutorService) SubmitAndExecute(ctx context.Context, req *a
 		ResultChan: resultChan,
 	}
 
-	taskRes, err := taskRunner.SubmitAndWaitTaskRes(ctx, &task, executorId)
+	taskRes, err := taskRunner.SubmitAndWaitTaskRes(context.Background(), &task, executorId)
 	if err != nil {
-		log.Errorw("failed to execute task", "task", task, "err", err)
+		log.Fatalw("failed to execute task", "task", task, "err", err)
 		return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, "", ""), nil
 	}
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/chanfun-ren/executor/api"
 	"github.com/chanfun-ren/executor/internal/network"
@@ -20,6 +21,7 @@ import (
 	"github.com/libp2p/go-libp2p"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 func initDefaultRedisCli() store.KVStoreClient {
@@ -65,7 +67,19 @@ func main() {
 	discoveryService := service.NewDiscoveryService(nm)
 	sharebuildService := service.NewSharebuildProxyService(nm, redisCli)
 	executroService := service.NewShareBuildExecutorService(h)
-	grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptor.LogInterceptor, interceptor.MetricsInterceptor))
+	// grpcServer := grpc.NewServer(grpc.ChainUnaryInterceptor(interceptor.LogInterceptor, interceptor.MetricsInterceptor))
+	grpcServer := grpc.NewServer(
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionIdle: 30 * time.Hour, // 空闲连接最大保留时间
+			MaxConnectionAge:  1 * time.Hour,  // 连接最大生命周期
+			Time:              30 * time.Hour, // 服务端发送心跳的间隔
+			Timeout:           3 * time.Hour,  // 服务端等待心跳响应的超时
+		}),
+		grpc.MaxConcurrentStreams(500), // 可根据负载测试调整
+		grpc.MaxRecvMsgSize(10<<20),    // 10MB 最大接收消息
+		grpc.ChainUnaryInterceptor(interceptor.RecoveryInterceptor, interceptor.MetricsInterceptor),
+	)
+
 	api.RegisterDiscoveryServer(grpcServer, discoveryService)
 	api.RegisterShareBuildProxyServer(grpcServer, sharebuildService)
 	api.RegisterShareBuildExecutorServer(grpcServer, executroService)

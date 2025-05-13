@@ -81,7 +81,7 @@ func (nm *NetManager) Connected(n network.Network, c network.Conn) {
 }
 
 func (nm *NetManager) Disconnected(n network.Network, c network.Conn) {
-	log.Infow("Peer disconnected", "peer", c.RemotePeer())
+	log.Warnw("Peer disconnected", "peer", c.RemotePeer())
 	nm.PeerManager.Remove(c.RemotePeer())
 }
 

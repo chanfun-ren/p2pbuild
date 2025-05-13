@@ -24,6 +24,21 @@ import (
 
 var log = logging.DefaultLogger()
 
+func IsLocalExecutor(exexcutorIP string) bool {
+	return strings.HasPrefix(exexcutorIP, GetOutboundIP().String())
+}
+
+func CanExexcuteRemotely(cmd string) bool {
+	supportedCommands := []string{"gcc ", "g++ ", "c++ ", "clang ", "clang++ ", "javac "}
+
+	for _, compiler := range supportedCommands {
+		if strings.Contains(strings.ToLower(cmd), strings.ToLower(compiler)) {
+			return true
+		}
+	}
+	return false
+}
+
 // Get preferred outbound ip of this machine
 func GetOutboundIP() net.IP {
 	var log = logging.DefaultLogger()
@@ -185,6 +200,7 @@ func MountNFS(ctx context.Context, host, srcDir, dstDir string) error {
 
 	cmd := &Command{
 		Content: fmt.Sprintf("mount -t nfs -o async %s:%s %s", host, srcDir, dstDir),
+		// Content: fmt.Sprintf("mount -t nfs -o rw,async,ac,acregmin=1,acregmax=3,acdirmin=1,acdirmax=3 %s:%s %s", host, srcDir, dstDir),
 		WorkDir: "",
 		Env:     nil,
 	}

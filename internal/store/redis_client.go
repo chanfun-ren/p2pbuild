@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/chanfun-ren/executor/internal/model"
@@ -22,10 +23,29 @@ var log = logging.DefaultLogger()
 // NewRedisClient 初始化 Redis 客户端
 func NewRedisClient(config KVStoreConfig) (KVStoreClient, error) {
 	addr := fmt.Sprintf("%s:%d", config.Host, config.Port)
+	// options := &redis.Options{
+	// 	Addr: addr,
+	// 	// Password: config.Auth["password"].(string),
+	// 	// DB:       config.Options["db"].(int),
+	// }
 	options := &redis.Options{
-		Addr: addr,
-		// Password: config.Auth["password"].(string),
-		// DB:       config.Options["db"].(int),
+		Addr:         addr,
+		DialTimeout:  10 * time.Second, // 建立新连接超时
+		ReadTimeout:  10 * time.Second, // 单次读操作超时
+		WriteTimeout: 10 * time.Second, // 单次写操作超时
+
+		PoolSize:     100,             // 并发 goroutine 数量上限
+		MinIdleConns: 4,               // 保留一定数量的闲置连接
+		PoolTimeout:  5 * time.Second, // 适当增加等待超时，比如 3-5 秒
+
+		// 定制底层 Dialer，用于启用 TCP keepalive
+		Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := &net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}
+			return d.DialContext(ctx, network, addr)
+		},
 	}
 
 	rdb := redis.NewClient(options)

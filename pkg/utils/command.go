@@ -5,7 +5,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"time"
 
 	"github.com/chanfun-ren/executor/pkg/logging"
 )
@@ -25,76 +27,125 @@ type CommandResult struct {
 	Error    string `json:"error,omitempty"`
 }
 
-// ExecCommand 执行命令并返回结果
+// ExecCommand 执行命令并返回结果，失败时自动重试
 func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 	log := logging.NewComponentLogger("internal")
-	// log.Debugw("Executing command",
-	// 	"command", cmd.Content,
-	// 	"workDir", cmd.WorkDir,
-	// 	"env", cmd.Env,
-	// )
 
-	// Prepare command
-	execCmd := exec.CommandContext(ctx, "sh", "-c", cmd.Content)
-	execCmd.Dir = cmd.WorkDir
+	// 重试参数
+	maxRetries := 3
+	retryDelay := 500 * time.Millisecond
 
-	for k, v := range cmd.Env {
-		execCmd.Env = append(execCmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
+	var lastResult CommandResult
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// 记录重试日志
+		if attempt > 0 {
+			log.Infow("Retrying command execution", "attempt", attempt,
+				"maxRetries", maxRetries, "command", cmd.Content)
 
-	// Prepare stdout/stderr buffers
-	var stdout, stderr bytes.Buffer
-	execCmd.Stdout = &stdout
-	execCmd.Stderr = &stderr
-
-	// Execute with timeout context
-	err := execCmd.Start()
-	if err != nil {
-		return CommandResult{
-			ExitCode: -1,
-			Error:    fmt.Sprintf("failed to start command: %v", err),
-		}
-	}
-
-	// Wait with timeout
-	done := make(chan error)
-	go func() {
-		done <- execCmd.Wait()
-	}()
-
-	// Wait for completion or timeout
-	select {
-	case <-ctx.Done():
-		// Try to kill if context cancelled
-		execCmd.Process.Kill()
-		return CommandResult{
-			Stdout:   stdout.String(),
-			Stderr:   stderr.String(),
-			ExitCode: -1,
-			Error:    "command timeout",
-		}
-	case err := <-done:
-		result := CommandResult{
-			Stdout:   stdout.String(),
-			Stderr:   stderr.String(),
-			ExitCode: 0,
-		}
-
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				result.ExitCode = exitErr.ExitCode()
-				result.Error = fmt.Sprintf("%s: %s", exitErr.Error(), stderr.String())
-			} else {
-				result.ExitCode = -1
-				result.Error = fmt.Sprintf("%v: %s", err, stderr.String())
+			// 检查上下文是否已取消
+			select {
+			case <-ctx.Done():
+				return CommandResult{
+					Stdout:   lastResult.Stdout,
+					Stderr:   lastResult.Stderr,
+					ExitCode: -1,
+					Error:    "context cancelled during retry wait",
+				}
+			case <-time.After(retryDelay):
+				// 等待重试延迟时间
 			}
-			log.Errorw("Command executed with error", "result", result, "cmd", cmd)
+
+			// 指数退避: 每次重试增加等待时间
+			retryDelay = retryDelay * 2
 		}
 
-		// log.Debugw("Command executed", "result", result)
+		// Prepare command
+		execCmd := exec.CommandContext(ctx, "sh", "-c", cmd.Content)
+		execCmd.Dir = cmd.WorkDir
 
-		return result
+		// 设置环境变量
+		// fmt.Printf("工作路径: %s\n", execCmd.Dir)
+		execCmd.Env = os.Environ() // 先继承全局环境变量
+		// for aosp: 手动添加 TOP="/home/lab2/android-12.0.0_r4" 环境变量
+		// 对于 AOSP, project_root_dir 和 work_dir 为同一个目录
+		execCmd.Env = append(execCmd.Env, fmt.Sprintf("TOP=%s", cmd.WorkDir))
+		// fmt.Println("基础环境变量: ", execCmd.Env)
+		for k, v := range cmd.Env {
+			execCmd.Env = append(execCmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+		// fmt.Println("环境变量: ", execCmd.Env)
+
+		// Prepare stdout/stderr buffers
+		var stdout, stderr bytes.Buffer
+		execCmd.Stdout = &stdout
+		execCmd.Stderr = &stderr
+
+		// Execute with timeout context
+		err := execCmd.Start()
+		if err != nil {
+			lastResult = CommandResult{
+				ExitCode: -1,
+				Error:    fmt.Sprintf("failed to start command: %v", err),
+			}
+			continue // 命令启动失败，尝试重试
+		}
+
+		// Wait with timeout
+		done := make(chan error)
+		go func() {
+			// 等待命令执行完成
+			done <- execCmd.Wait()
+		}()
+
+		// Wait for completion or timeout
+		select {
+		case <-ctx.Done():
+			// Try to kill if context cancelled
+			execCmd.Process.Kill()
+			return CommandResult{
+				Stdout:   stdout.String(),
+				Stderr:   stderr.String(),
+				ExitCode: -1,
+				Error:    "command timeout",
+			}
+		case err := <-done:
+			result := CommandResult{
+				Stdout:   stdout.String(),
+				Stderr:   stderr.String(),
+				ExitCode: 0,
+			}
+
+			if err != nil {
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					result.ExitCode = exitErr.ExitCode()
+					result.Error = fmt.Sprintf("%s: %s", exitErr.Error(), stderr.String())
+				} else {
+					result.ExitCode = -1
+					result.Error = fmt.Sprintf("%v: %s", err, stderr.String())
+				}
+				log.Warnw("Command execution failed", "attempt", attempt+1,
+					"result", result)
+
+				// 保存结果并尝试重试
+				lastResult = result
+				continue
+			}
+
+			// 命令成功执行
+			if attempt > 0 {
+				log.Infow("Command succeeded after retries", "attempts", attempt+1)
+			}
+
+			return result
+		}
 	}
+
+	// 达到最大重试次数
+	// !TODO: debug 临时使用 Fatalw, 后续改为 warning
+	log.Fatalw("Command failed after maximum retries", "maxRetries", maxRetries,
+		"lastExitCode", lastResult.ExitCode, "lastError", lastResult.Error, "command", cmd.Content)
+
+	return lastResult
 }
 
 // WithStdio 允许自定义标准输入输出

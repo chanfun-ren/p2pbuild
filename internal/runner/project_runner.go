@@ -474,6 +474,112 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 			fmt.Printf("[%s] Stopping worker\n", workerID)
 			return
 		default:
+			// 优先执行本地任务 (非阻塞尝试)
+			var task model.Task
+			var ok bool
+			select {
+			case task = <-r.LocalQueue:
+				ok = true
+			default:
+				// 本地任务为空，进入下一步判断或等待
+				ok = false
+			}
+
+			// 如果本地队列没有任务，则尝试阻塞地等待 本地队列、远程队列 或 停止信号
+			if !ok {
+				select {
+				// 再次检查 LocalQueue，因为在上次检查后可能有新任务到达，维持优先级
+				case task = <-r.LocalQueue:
+					ok = true
+					// 如果 LocalQueue 仍然没有，等待 RemoteQueue
+				case task = <-r.RemoteQueue:
+					ok = true
+					// 同时等待停止信号
+				case <-r.stopChan:
+					fmt.Printf("[%s] Stopping worker\n", workerID)
+					return // 收到停止信号，直接返回
+				}
+			}
+
+			// 注意：如果上面的阻塞 select 因为 stopChan 而返回，ok 会是 false，不会进入这里
+			if ok {
+				// Try claim task
+				result, err := r.TryClaimTask(context.Background(), task.TaskKey, workerID)
+				if err != nil {
+					task.ResultChan <- model.TaskResult{
+						TaskKey: task.TaskKey,
+						Status:  "claim_error",
+						Err:     err,
+					}
+					continue // 处理下一个循环
+				}
+				// Handle claim result
+				switch result.Code {
+				case -1: // 任务不存在
+					task.ResultChan <- model.TaskResult{
+						StatusCode: api.RC_EXECUTOR_RESOURCE_NOT_FOUND,
+						Message:    "task not found",
+					}
+				case 1: // 任务状态不匹配
+					task.ResultChan <- model.TaskResult{
+						StatusCode: api.RC_EXECUTOR_TASK_ALREADY_CLAIMED,
+						Message:    "task already claimed by others",
+					}
+				case 2: // 参数错误
+					task.ResultChan <- model.TaskResult{
+						StatusCode: api.RC_EXECUTOR_INVALID_ARGUMENT,
+						Message:    "invalid arguments",
+					}
+				case 0: // 成功 claimed
+					r.PreemptedTaskCount.Add(1)
+					// 从 redis 获取具体命令内容
+					content, err := r.KVStore.HGet(context.Background(), task.TaskKey, "content")
+					if err != nil {
+						task.ResultChan <- model.TaskResult{
+							TaskKey: task.TaskKey,
+							Status:  "error",
+							Err:     fmt.Errorf("failed to get command content: %v", err),
+						}
+						continue // 处理下一个循环
+					}
+
+					// 执行命令
+					task.Command = content
+					taskRes := r.baseRunner.RunTask(&task)
+					taskRes.StatusCode = api.RC_EXECUTOR_OK
+					// 任务执行成功：更新任务状态为完成.
+					if taskRes.ExitCode == 0 {
+						r.TryFinishTask(context.Background(), task.TaskKey, workerID)
+						log.Infow("Task done.", "taskKey", task.TaskKey, "workerID", workerID)
+					} else { // fallback
+						log.Warnw("Task failed, unclaiming...", "taskKey", task.TaskKey, "workerID", workerID)
+						r.UnclaimeTask(context.Background(), task.TaskKey, workerID)
+					}
+					task.ResultChan <- taskRes
+				default:
+					log.Errorf("[%s] Unexpected result code: %d\n", workerID, result.Code)
+					task.ResultChan <- model.TaskResult{
+						StatusCode: api.RC_EXECUTOR_UNEXPECTED_RESULT,
+						Message:    "unexpected result code",
+					}
+				}
+			}
+			// 如果 ok 是 false (只有在 stopChan 触发时才可能)，循环会在顶部检测到 stopChan 并退出
+
+		} // end outer select
+	} // end for
+}
+
+// Worker 逻辑
+func (r *TaskBufferedRunner) worker_busy_wait(workerID string) {
+	defer r.wg.Done()
+	// Worker handles full task lifecycle
+	for {
+		select {
+		case <-r.stopChan:
+			fmt.Printf("[%s] Stopping worker\n", workerID)
+			return
+		default:
 			// 优先执行本地任务
 			var task model.Task
 			var ok bool
@@ -545,7 +651,9 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 				// 任务执行成功：更新任务状态为完成.
 				if taskRes.ExitCode == 0 {
 					r.TryFinishTask(context.Background(), task.TaskKey, workerID)
+					log.Infow("Task done.", "taskKey", task.TaskKey, "workerID", workerID)
 				} else { // fallback
+					log.Warnw("Task failed, unclaiming...", "taskKey", task.TaskKey, "workerID", workerID)
 					r.UnclaimeTask(context.Background(), task.TaskKey, workerID)
 				}
 				task.ResultChan <- taskRes
@@ -562,7 +670,16 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 }
 
 func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
-	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		result, err := r.KVStore.ClaimCmd(ctx, TaskKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
+		if err == nil {
+			return result, nil
+		}
+		log.Warnw("Retrying claim task", "attempt", i+1, "err", err)
+		time.Sleep(time.Second * time.Duration(i+1))
+	}
+	return store.ClaimCmdResult{}, fmt.Errorf("failed to claim task after %d retries", maxRetries)
 }
 
 func (r *TaskBufferedRunner) UnclaimeTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
@@ -592,6 +709,7 @@ func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *mod
 		case result := <-task.ResultChan:
 			return result, result.Err
 		case <-ctx.Done():
+			log.Errorw("context canceled in SubmitAndWaitTaskRes", "err", ctx.Err())
 			return model.TaskResult{}, ctx.Err()
 		}
 	default:

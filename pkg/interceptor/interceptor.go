@@ -3,11 +3,15 @@ package interceptor
 
 import (
 	"context"
+	"runtime/debug"
 	"time"
 
 	"github.com/chanfun-ren/executor/pkg/logging"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -28,13 +32,13 @@ func init() {
 
 func LogInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	log := logging.FromContext(ctx)
-	// log.Debugw("Received request", "method", info.FullMethod, "request", req)
-	// start := time.Now()
+	log.Infow("Received request", "method", info.FullMethod, "request", req)
+	start := time.Now()
 	resp, err := handler(ctx, req)
 	if err != nil {
 		log.Errorw("Failed to handle request", "method", info.FullMethod, "error", err)
 	}
-	// log.Debugw("Handled request", "method", info.FullMethod, "duration", time.Since(start))
+	log.Infow("Handled request", "method", info.FullMethod, "duration", time.Since(start))
 	return resp, err
 }
 
@@ -47,3 +51,16 @@ func MetricsInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo
 
 	return resp, err
 }
+
+func RecoveryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+	defer func() {
+		log := logging.FromContext(ctx)
+		if r := recover(); r != nil {
+			log.Errorf("panic in RPC %s: %v\n%s", info.FullMethod, r, debug.Stack())
+			err = status.Errorf(codes.Internal, "internal panic")
+		}
+	}()
+	return handler(ctx, req)
+}
+
+// 然后 grpc.NewServer(grpc.UnaryInterceptor(recoveryInterceptor))
