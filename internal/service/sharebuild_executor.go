@@ -44,8 +44,8 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 	}
 	redisConfig := store.KVStoreConfig{
 		Type: "redis",
-		Host: project.NinjaHost,
-		Port: config.STORE_PORT,
+		Host: config.GlobalConfig.StoreHost,
+		Port: config.GlobalConfig.StorePort,
 	}
 	redisCli, err := store.GetKVStoreFactory().CreateKVStoreClient(redisConfig)
 	if err != nil {
@@ -54,7 +54,7 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 	}
 
 	// 始终创建新的 ProjectRunner, 用户可能更新 containerImage
-	ProjectRunner, err := runner.NewScheduledProjectRunner(req.ContainerImage, redisCli, config.POOLSIZE)
+	ProjectRunner, err := runner.NewScheduledProjectRunner(req.ContainerImage, redisCli, config.GlobalConfig.PoolSize)
 	if err != nil {
 		log.Errorw("failed to create ProjectRunner", "containerImage", req.ContainerImage, "err", err)
 		return NewPLEResponse(api.RC_EXECUTOR_RUNNER_CREATION_FAILED, "failed to create ProjectRunner"), nil
@@ -98,9 +98,9 @@ func (s *ShareBuildExecutorService) SubmitAndExecute(ctx context.Context, req *a
 	}
 
 	taskRes, err := taskRunner.SubmitAndWaitTaskRes(context.Background(), &task, executorId)
-	if err != nil {
-		log.Fatalw("failed to execute task", "task", task, "err", err)
-		return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, "", ""), nil
+	if err != nil || taskRes.ExitCode != 0 {
+		log.Warnw("failed to execute task", "task", task, "err", err, "taskRes", taskRes)
+		return NewSAEResponse(api.RC_EXECUTOR_INTERNAL_ERROR, fmt.Sprintf("failed to execute task: %v", err), req.CmdId, taskRes.StdOut, taskRes.StdErr), nil
 	}
 
 	return NewSAEResponse(taskRes.StatusCode, taskRes.Status, req.CmdId, taskRes.StdOut, taskRes.StdErr), nil

@@ -120,6 +120,10 @@ func NewRedisClient(config KVStoreConfig) (KVStoreClient, error) {
 	return &RedisClient{client: rdb, script: script}, nil
 }
 
+func (r *RedisClient) FlushDB(ctx context.Context) error {
+	return r.client.FlushDB(ctx).Err()
+}
+
 func (r *RedisClient) HGet(ctx context.Context, key, field string) (string, error) {
 	result := r.client.HGet(ctx, key, field)
 	if result.Err() != nil {
@@ -150,6 +154,11 @@ func (r *RedisClient) HSetWithTTL(ctx context.Context, key string, fields map[st
 
 // 使用 TaskStatus 类型
 func (r *RedisClient) ClaimCmd(ctx context.Context, key string, expectedStatus model.TaskStatus, newStatus model.TaskStatus, lastModifier string, ttl time.Duration) (ClaimCmdResult, error) {
+	// startTime := time.Now()
+	// defer func() {
+	// 	duration := time.Since(startTime)
+	// 	log.Infow("ClaimCmd execution time", "key", key, "expectedStatus", expectedStatus, "newStatus", newStatus, "duration", duration)
+	// }()
 	// 确保状态值是有效的
 	if expectedStatus < model.Unclaimed || expectedStatus > model.Done {
 		return ClaimCmdResult{}, errors.New("invalid expected status")

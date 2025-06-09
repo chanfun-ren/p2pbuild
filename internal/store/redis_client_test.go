@@ -146,9 +146,13 @@ func TestClaimCmd(t *testing.T) {
 		}{
 			{model.Unclaimed, model.Claimed, "worker1", 0, model.Claimed.String()},
 			{model.Claimed, model.Done, "worker1", 0, model.Done.String()},
-			{model.Claimed, model.Unclaimed, "worker1", 1, model.Done.String()},
-			{model.Done, model.Unclaimed, "system", 0, model.Unclaimed.String()}, // Reset cycle
+			{model.Done, model.Claimed, "worker1", 0, model.Claimed.String()}, // Reset cycle
+			{model.Claimed, model.Unclaimed, "worker1", 0, model.Unclaimed.String()},
+
 			{model.Unclaimed, model.Claimed, "worker1", 0, model.Claimed.String()},
+			{model.Claimed, model.Done, "worker1", 0, model.Done.String()},
+			{model.Done, model.Claimed, "worker1", 0, model.Claimed.String()}, // Reset cycle
+			{model.Claimed, model.Unclaimed, "worker1", 0, model.Unclaimed.String()},
 		}
 
 		// Set initial state

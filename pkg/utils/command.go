@@ -30,6 +30,13 @@ type CommandResult struct {
 // ExecCommand 执行命令并返回结果，失败时自动重试
 func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 	log := logging.NewComponentLogger("internal")
+	if cmd.Content == "" {
+		log.Fatalw("Command content is empty", "pid", os.Getpid())
+		return CommandResult{
+			ExitCode: -1,
+			Error:    "command content is empty",
+		}
+	}
 
 	// 重试参数
 	maxRetries := 3
@@ -40,7 +47,7 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 		// 记录重试日志
 		if attempt > 0 {
 			log.Infow("Retrying command execution", "attempt", attempt,
-				"maxRetries", maxRetries, "command", cmd.Content)
+				"maxRetries", maxRetries, "command", cmd.Content, "pid", os.Getpid())
 
 			// 检查上下文是否已取消
 			select {
@@ -48,7 +55,7 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 				return CommandResult{
 					Stdout:   lastResult.Stdout,
 					Stderr:   lastResult.Stderr,
-					ExitCode: -1,
+					ExitCode: -2,
 					Error:    "context cancelled during retry wait",
 				}
 			case <-time.After(retryDelay):
@@ -64,27 +71,25 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 		execCmd.Dir = cmd.WorkDir
 
 		// 设置环境变量
-		// fmt.Printf("工作路径: %s\n", execCmd.Dir)
 		execCmd.Env = os.Environ() // 先继承全局环境变量
 		// for aosp: 手动添加 TOP="/home/lab2/android-12.0.0_r4" 环境变量
 		// 对于 AOSP, project_root_dir 和 work_dir 为同一个目录
 		execCmd.Env = append(execCmd.Env, fmt.Sprintf("TOP=%s", cmd.WorkDir))
-		// fmt.Println("基础环境变量: ", execCmd.Env)
 		for k, v := range cmd.Env {
 			execCmd.Env = append(execCmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}
-		// fmt.Println("环境变量: ", execCmd.Env)
 
 		// Prepare stdout/stderr buffers
 		var stdout, stderr bytes.Buffer
 		execCmd.Stdout = &stdout
 		execCmd.Stderr = &stderr
 
+		startTime := time.Now()
 		// Execute with timeout context
 		err := execCmd.Start()
 		if err != nil {
 			lastResult = CommandResult{
-				ExitCode: -1,
+				ExitCode: -3,
 				Error:    fmt.Sprintf("failed to start command: %v", err),
 			}
 			continue // 命令启动失败，尝试重试
@@ -105,8 +110,8 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 			return CommandResult{
 				Stdout:   stdout.String(),
 				Stderr:   stderr.String(),
-				ExitCode: -1,
-				Error:    "command timeout",
+				ExitCode: -4,
+				Error:    "command timeout: " + ctx.Err().Error(),
 			}
 		case err := <-done:
 			result := CommandResult{
@@ -120,11 +125,11 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 					result.ExitCode = exitErr.ExitCode()
 					result.Error = fmt.Sprintf("%s: %s", exitErr.Error(), stderr.String())
 				} else {
-					result.ExitCode = -1
+					result.ExitCode = -5
 					result.Error = fmt.Sprintf("%v: %s", err, stderr.String())
 				}
 				log.Warnw("Command execution failed", "attempt", attempt+1,
-					"result", result)
+					"result", result, "pid", os.Getpid())
 
 				// 保存结果并尝试重试
 				lastResult = result
@@ -136,14 +141,19 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 				log.Infow("Command succeeded after retries", "attempts", attempt+1)
 			}
 
+			execTime := time.Since(startTime)
+			if execTime > 4*time.Minute {
+				log.Warnw("Long running command", "duration", execTime, "command", cmd.Content)
+			}
+
 			return result
 		}
 	}
 
 	// 达到最大重试次数
 	// !TODO: debug 临时使用 Fatalw, 后续改为 warning
-	log.Fatalw("Command failed after maximum retries", "maxRetries", maxRetries,
-		"lastExitCode", lastResult.ExitCode, "lastError", lastResult.Error, "command", cmd.Content)
+	log.Warnw("Command failed after maximum retries", "maxRetries", maxRetries,
+		"lastExitCode", lastResult.ExitCode, "lastError", lastResult.Error, "command", cmd)
 
 	return lastResult
 }

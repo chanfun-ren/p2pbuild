@@ -28,6 +28,7 @@ type KVStoreConfig struct {
 }
 
 type KVStoreClient interface {
+	FlushDB(ctx context.Context) error
 	HGet(ctx context.Context, key, field string) (string, error)
 	HSet(ctx context.Context, key string, fields map[string]interface{}) error
 	Expire(ctx context.Context, key string, ttl time.Duration) error

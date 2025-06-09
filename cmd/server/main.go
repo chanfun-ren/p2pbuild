@@ -13,9 +13,9 @@ import (
 	"github.com/chanfun-ren/executor/internal/network"
 	"github.com/chanfun-ren/executor/internal/service"
 	"github.com/chanfun-ren/executor/pkg/config"
+	"github.com/chanfun-ren/executor/pkg/interceptor"
 
 	"github.com/chanfun-ren/executor/internal/store"
-	"github.com/chanfun-ren/executor/pkg/interceptor"
 	"github.com/chanfun-ren/executor/pkg/logging"
 	"github.com/chanfun-ren/executor/pkg/utils"
 	"github.com/libp2p/go-libp2p"
@@ -27,8 +27,8 @@ import (
 func initDefaultRedisCli() store.KVStoreClient {
 	redisConfig := store.KVStoreConfig{
 		Type: "redis",
-		Host: "localhost",
-		Port: config.STORE_PORT,
+		Host: config.GlobalConfig.StoreHost,
+		Port: config.GlobalConfig.StorePort,
 	}
 	redisCli, err := store.GetKVStoreFactory().CreateKVStoreClient(redisConfig)
 	if err != nil {
@@ -77,14 +77,15 @@ func main() {
 		}),
 		grpc.MaxConcurrentStreams(500), // 可根据负载测试调整
 		grpc.MaxRecvMsgSize(10<<20),    // 10MB 最大接收消息
-		grpc.ChainUnaryInterceptor(interceptor.RecoveryInterceptor, interceptor.MetricsInterceptor),
+		// grpc.ChainUnaryInterceptor(interceptor.RecoveryInterceptor, interceptor.MetricsInterceptor),
+		grpc.ChainUnaryInterceptor(interceptor.LogInterceptor),
 	)
 
 	api.RegisterDiscoveryServer(grpcServer, discoveryService)
 	api.RegisterShareBuildProxyServer(grpcServer, sharebuildService)
 	api.RegisterShareBuildExecutorServer(grpcServer, executroService)
 
-	address := fmt.Sprintf(":%d", config.GRPC_PORT)
+	address := fmt.Sprintf(":%d", config.GlobalConfig.GrpcPort)
 	lis, err := net.Listen("tcp", address)
 	if err != nil {
 		log.Fatalw("grpc server failed to bind addr", "address", address, "error", err)

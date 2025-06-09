@@ -119,7 +119,7 @@ func (s *SharebuildProxyService) getOrCreateGrpcConnsForProject(projectKey strin
 	conns := make([]*grpc.ClientConn, len(executors))
 	for i, executor := range executors {
 		// 构建目标地址
-		target := fmt.Sprintf("%s:%d", executor.Ip, config.GRPC_PORT)
+		target := fmt.Sprintf("%s:%d", executor.Ip, config.GlobalConfig.GrpcPort)
 		log.Infow("Connecting to executor", "executor", executor.String(), "target", target)
 
 		// 创建 gRPC 连接
@@ -202,7 +202,7 @@ func (s *SharebuildProxyService) ForwardAndExecute(ctx context.Context, req *api
 		"status":  "unclaimed",
 		"content": cmdContent,
 	}
-	err := s.kvStoreClient.HSetWithTTL(ctx, taskKey, fields, config.CMDTTL)
+	err := s.kvStoreClient.HSetWithTTL(ctx, taskKey, fields, config.GlobalConfig.CmdTTL)
 	if err != nil {
 		log.Errorw("Failed to store command", "taskKey", taskKey, "fields", fields, "err", err)
 		return NewFAEResponse(api.RC_PROXY_KVSTORE_FAILED, "Failed to store command"), nil
@@ -351,7 +351,7 @@ func (s *SharebuildProxyService) tryExecuteWithRetry(ctx context.Context, req *a
 	}
 
 	// 这一批次全部失败，继续 local executor 重试
-	log.Fatalw("All executors failed this attempt, will retry in local executor", "cmdId", req.CmdId, "cmd", req.CmdContent)
+	log.Warnw("All executors failed this attempt, will retry in local executor", "cmdId", req.CmdId, "cmd", string(req.CmdContent))
 
 	// 向 local executor 下发 SubmitAndExecute 调用请求
 	localClient := api.NewShareBuildExecutorClient(localExecutorConn)

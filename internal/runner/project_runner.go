@@ -23,6 +23,7 @@ import (
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"golang.org/x/exp/rand"
 )
 
 type ProjectRunner interface {
@@ -66,30 +67,29 @@ func (l *LocalProjectRunner) PrepareEnvironment(ctx context.Context, req *api.Pr
 		return nil
 	}
 
-	l.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
-	mountedRootDir, err := mountNinjaProject(ctx, req)
+	// l.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
+	// 使用和客户端完全相同的路径 mount.
+	l.mountedBuildDir = req.Project.NinjaDir
+	l.mountedRootDir = req.Project.RootDir
+	err := mountNinjaProject(ctx, req, l.mountedRootDir)
 	if err != nil {
 		log.Errorw("Failed to mount ninja project", "req", req, "error", err)
 		return err
 	}
-	l.mountedRootDir = mountedRootDir
 	return nil
 }
 
-func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) (string, error) {
+func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest, mountedRootDir string) error {
 	// 设置本地编译环境，例如 NFS 挂载
 	project := req.GetProject()
 	ninjaHost := project.GetNinjaHost()
 	rootDir := project.GetRootDir()
 	log.Debugw("Mounting ninja project", "ninjaHost", ninjaHost, "rootDir", rootDir)
 
-	// 生成挂载点目录, 若目录不存在则递归创建
-	// Generate mount point in user's home directory instead of /home/root
-	mountedRootDir := utils.GenMountedRootDir(ninjaHost, rootDir)
-	// Add timeout context
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// 生成挂载点目录, 若目录不存在则递归创建
 	// Make directory with detailed error logging
 	err := os.MkdirAll(mountedRootDir, 0755)
 	if err != nil {
@@ -98,25 +98,25 @@ func mountNinjaProject(ctx context.Context, req *api.PrepareLocalEnvRequest) (st
 			"error", err,
 			"currentUser", os.Getenv("USER"),
 			"currentUID", os.Getuid())
-		return "", fmt.Errorf("failed to create mount directory: %w", err)
+		return fmt.Errorf("failed to create mount directory: %w", err)
 	}
 
 	err = utils.MountNFS(ctx, ninjaHost, rootDir, mountedRootDir)
 	if err != nil {
 		log.Errorw("Failed to mount nfs", "mountedRootDir", mountedRootDir, "error", err)
-		return "", err
+		return err
 	}
 
 	// 本地生成一个和客户端项目主目录同名路径，将其映射到挂载路径
-	err = utils.MapWorkspace(mountedRootDir, rootDir)
-	if err != nil {
-		log.Debugw("Failed to map workspace", "mountedRootDir", mountedRootDir, "rootDir", rootDir, "error", err)
-		return "", err
-	}
+	// err = utils.MapWorkspace(mountedRootDir, rootDir)
+	// if err != nil {
+	// 	log.Debugw("Failed to map workspace", "mountedRootDir", mountedRootDir, "rootDir", rootDir, "error", err)
+	// 	return err
+	// }
 
-	log.Infow("Workspace created successfully", "mountedRootDir", mountedRootDir, "WorkspaceDir", rootDir)
+	// log.Infow("Workspace created successfully", "mountedRootDir", mountedRootDir, "WorkspaceDir", rootDir)
 
-	return mountedRootDir, nil
+	return nil
 }
 
 func umountNinjaProject(mountedRootDir, projectRootDir string) error {
@@ -130,11 +130,11 @@ func umountNinjaProject(mountedRootDir, projectRootDir string) error {
 		return err
 	}
 
-	err = utils.ClearWorkspace(projectRootDir)
-	if err != nil {
-		log.Errorw("Failed to clear workspace", "projectRootDir", projectRootDir, "error", err)
-		return err
-	}
+	// err = utils.ClearWorkspace(projectRootDir)
+	// if err != nil {
+	// 	log.Errorw("Failed to clear workspace", "projectRootDir", projectRootDir, "error", err)
+	// 	return err
+	// }
 	return nil
 }
 
@@ -149,7 +149,14 @@ func (l *LocalProjectRunner) RunTask(task *model.Task) model.TaskResult {
 		Env:     make(map[string]string),
 	}
 
-	cmdRes := utils.ExecCommand(context.Background(), cmd)
+	timeout := 2 * time.Minute
+	if l.isLocalExecutor {
+		timeout = 10 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmdRes := utils.ExecCommand(ctx, cmd)
 
 	status := "ok"
 	var err error
@@ -203,7 +210,7 @@ func (c *ContainerProjectRunner) PrepareEnvironment(ctx context.Context, req *ap
 	c.mountedBuildDir = utils.GetMountedBuildDir(req.Project.NinjaHost, req.Project.NinjaDir)
 	c.projectRootDir = req.Project.RootDir
 	// 1. 挂载项目
-	_, err := mountNinjaProject(ctx, req)
+	err := mountNinjaProject(ctx, req, c.mountedRootDir)
 	if err != nil {
 		log.Errorw("Failed to mount project", "req", req, "error", err)
 		return err
@@ -417,8 +424,8 @@ func NewTaskBufferedRunner(baseRunner ProjectRunner, kvStore store.KVStoreClient
 	// 初始化 TaskBufferedRunner
 	taskBufferedRunner := &TaskBufferedRunner{
 		baseRunner:         baseRunner,
-		LocalQueue:         make(chan model.Task, config.QUEUESIZE),
-		RemoteQueue:        make(chan model.Task, config.QUEUESIZE),
+		LocalQueue:         make(chan model.Task, config.GlobalConfig.QueueSize),
+		RemoteQueue:        make(chan model.Task, config.GlobalConfig.QueueSize),
 		stopChan:           make(chan struct{}),
 		KVStore:            kvStore,
 		workerCount:        workerCount,
@@ -451,6 +458,7 @@ func (r *TaskBufferedRunner) RunTask(task *model.Task) model.TaskResult {
 
 func (r *TaskBufferedRunner) Cleanup(ctx context.Context) error {
 	err := r.baseRunner.Cleanup(ctx)
+	r.KVStore.FlushDB(ctx)
 	log.Infow("ProjectRunner free...", "ReceivedtaskCount", r.ReceivedtaskCount, "PreemptedTaskCount", r.PreemptedTaskCount.Load())
 	r.Stop()
 	return err
@@ -460,10 +468,11 @@ func (r *TaskBufferedRunner) Cleanup(ctx context.Context) error {
 func (r *TaskBufferedRunner) startWorkers() {
 	for i := 0; i < r.workerCount; i++ {
 		r.wg.Add(1)
-		go r.worker(fmt.Sprintf("worker-%d", i+1))
+		go r.worker_busy_wait(fmt.Sprintf("worker-%d", i+1))
 	}
 }
 
+// TODO: 修复下面的 worker 逻辑，偶尔会导致 server 卡死并且 CPU 利用率不饱和
 // Worker 逻辑
 func (r *TaskBufferedRunner) worker(workerID string) {
 	defer r.wg.Done()
@@ -487,6 +496,7 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 
 			// 如果本地队列没有任务，则尝试阻塞地等待 本地队列、远程队列 或 停止信号
 			if !ok {
+				time.Sleep(time.Duration(rand.Intn(5)) * time.Millisecond)
 				select {
 				// 再次检查 LocalQueue，因为在上次检查后可能有新任务到达，维持优先级
 				case task = <-r.LocalQueue:
@@ -553,7 +563,7 @@ func (r *TaskBufferedRunner) worker(workerID string) {
 						log.Infow("Task done.", "taskKey", task.TaskKey, "workerID", workerID)
 					} else { // fallback
 						log.Warnw("Task failed, unclaiming...", "taskKey", task.TaskKey, "workerID", workerID)
-						r.UnclaimeTask(context.Background(), task.TaskKey, workerID)
+						r.UnclaimTask(context.Background(), task.TaskKey, workerID)
 					}
 					task.ResultChan <- taskRes
 				default:
@@ -586,22 +596,27 @@ func (r *TaskBufferedRunner) worker_busy_wait(workerID string) {
 			select {
 			case task = <-r.LocalQueue:
 				ok = true
+			case task = <-r.RemoteQueue:
+				ok = true
 			default:
-				// 本地任务为空，再尝试远程任务
-				select {
-				case task = <-r.RemoteQueue:
-					ok = true
-				default:
-					ok = false
-				}
+				ok = false
+				// default:
+				// 	// 本地任务为空，再尝试远程任务
+				// 	select {
+				// 	case task = <-r.RemoteQueue:
+				// 		ok = true
+				// 	default:
+				// 		ok = false
+				// 	}
 			}
 
 			if !ok {
 				// 当前无任务，避免 busy-wait
-				time.Sleep(50 * time.Millisecond)
-				continue
-				// log.Debugw("No task to process...", "workerID", workerID)
+				// time.Sleep(50 * time.Millisecond)
 				// continue
+				time.Sleep(1 * time.Second)
+				log.Debugw("No task to process...", "workerID", workerID, "queueTasksNum", len(r.LocalQueue)+len(r.RemoteQueue))
+				continue
 			}
 
 			// Try claim task
@@ -621,17 +636,21 @@ func (r *TaskBufferedRunner) worker_busy_wait(workerID string) {
 					StatusCode: api.RC_EXECUTOR_RESOURCE_NOT_FOUND,
 					Message:    "task not found",
 				}
+				log.Errorw("Task not found", "taskKey", task.TaskKey, "workerID", workerID)
 			case 1: // 任务状态不匹配
 				task.ResultChan <- model.TaskResult{
 					StatusCode: api.RC_EXECUTOR_TASK_ALREADY_CLAIMED,
 					Message:    "task already claimed by others",
 				}
+				log.Warnw("Task already claimed by others", "taskKey", task.TaskKey, "workerID", workerID)
 			case 2: // 参数错误
 				task.ResultChan <- model.TaskResult{
 					StatusCode: api.RC_EXECUTOR_INVALID_ARGUMENT,
 					Message:    "invalid arguments",
 				}
+				log.Errorw("Invalid arguments for task", "taskKey", task.TaskKey, "workerID", workerID)
 			case 0: // 成功 claimed
+				log.Infow("Claim task successfully", "taskKey", task.TaskKey, "workerID", workerID)
 				r.PreemptedTaskCount.Add(1)
 				// 从 redis 获取具体命令内容
 				content, err := r.KVStore.HGet(context.Background(), task.TaskKey, "content")
@@ -644,6 +663,10 @@ func (r *TaskBufferedRunner) worker_busy_wait(workerID string) {
 					continue
 				}
 
+				if content == "" {
+					log.Fatalw("Task content is empty", "taskKey", task.TaskKey, "workerID", workerID)
+				}
+
 				// 执行命令
 				task.Command = content
 				taskRes := r.baseRunner.RunTask(&task)
@@ -653,8 +676,8 @@ func (r *TaskBufferedRunner) worker_busy_wait(workerID string) {
 					r.TryFinishTask(context.Background(), task.TaskKey, workerID)
 					log.Infow("Task done.", "taskKey", task.TaskKey, "workerID", workerID)
 				} else { // fallback
-					log.Warnw("Task failed, unclaiming...", "taskKey", task.TaskKey, "workerID", workerID)
-					r.UnclaimeTask(context.Background(), task.TaskKey, workerID)
+					log.Errorw("Task failed, unclaiming...", "taskRes", taskRes, "task", task, "workerID", workerID)
+					r.UnclaimTask(context.Background(), task.TaskKey, workerID)
 				}
 				task.ResultChan <- taskRes
 			default:
@@ -672,7 +695,7 @@ func (r *TaskBufferedRunner) worker_busy_wait(workerID string) {
 func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
 	maxRetries := 3
 	for i := 0; i < maxRetries; i++ {
-		result, err := r.KVStore.ClaimCmd(ctx, TaskKey, model.Unclaimed, model.Claimed, operator, config.TASKTTL)
+		result, err := r.KVStore.ClaimCmd(ctx, TaskKey, model.Unclaimed, model.Claimed, operator, config.GlobalConfig.TaskTTL)
 		if err == nil {
 			return result, nil
 		}
@@ -682,12 +705,12 @@ func (r *TaskBufferedRunner) TryClaimTask(ctx context.Context, TaskKey, operator
 	return store.ClaimCmdResult{}, fmt.Errorf("failed to claim task after %d retries", maxRetries)
 }
 
-func (r *TaskBufferedRunner) UnclaimeTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
-	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Claimed, model.Unclaimed, operator, config.TASKTTL)
+func (r *TaskBufferedRunner) UnclaimTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
+	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Claimed, model.Unclaimed, operator, config.GlobalConfig.TaskTTL)
 }
 
 func (r *TaskBufferedRunner) TryFinishTask(ctx context.Context, TaskKey, operator string) (store.ClaimCmdResult, error) {
-	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Claimed, model.Done, operator, config.TASKTTL)
+	return r.KVStore.ClaimCmd(ctx, TaskKey, model.Claimed, model.Done, operator, config.GlobalConfig.TaskTTL)
 }
 
 // 处理具体任务
@@ -704,7 +727,7 @@ func (r *TaskBufferedRunner) SubmitAndWaitTaskRes(ctx context.Context, task *mod
 	// 提交任务并等待结果
 	select {
 	case queue <- *task:
-		r.ReceivedtaskCount++
+		// r.ReceivedtaskCount++
 		select {
 		case result := <-task.ResultChan:
 			return result, result.Err

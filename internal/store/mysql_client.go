@@ -34,6 +34,10 @@ func NewMySQLClient(config KVStoreConfig) (KVStoreClient, error) {
 	return &MySQLClient{db: db}, nil
 }
 
+func (r *MySQLClient) FlushDB(ctx context.Context) error {
+	return fmt.Errorf("FlushDB operation is not supported in MySQL")
+}
+
 func (r *MySQLClient) HGet(ctx context.Context, key, field string) (string, error) {
 	return "", nil
 }

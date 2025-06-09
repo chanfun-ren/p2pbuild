@@ -200,6 +200,7 @@ func MountNFS(ctx context.Context, host, srcDir, dstDir string) error {
 
 	cmd := &Command{
 		Content: fmt.Sprintf("mount -t nfs -o async %s:%s %s", host, srcDir, dstDir),
+		// mount -t nfs -o soft,timeo=10,retrans=3
 		// Content: fmt.Sprintf("mount -t nfs -o rw,async,ac,acregmin=1,acregmax=3,acdirmin=1,acdirmax=3 %s:%s %s", host, srcDir, dstDir),
 		WorkDir: "",
 		Env:     nil,
@@ -220,11 +221,11 @@ func MountNFS(ctx context.Context, host, srcDir, dstDir string) error {
 
 func GenMountedRootDir(ninjaHost string, projRootDir string) string {
 	rootDir := strings.TrimSuffix(projRootDir, "/")
-	return filepath.Join(config.ExecutorHome, ninjaHost, rootDir)
+	return filepath.Join(config.GlobalConfig.ExecutorHome, ninjaHost, rootDir)
 }
 
 func GetMountedBuildDir(ninjaHost string, ninjaBuildDir string) string {
-	return filepath.Join(config.ExecutorHome, ninjaHost, ninjaBuildDir)
+	return filepath.Join(config.GlobalConfig.ExecutorHome, ninjaHost, ninjaBuildDir)
 }
 
 // UnmountNFS 取消挂载 NFS 共享目录
