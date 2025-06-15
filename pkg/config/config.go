@@ -42,7 +42,7 @@ func init() {
 		TaskTTL:      20 * time.Minute,
 		ExecutorHome: determineDefaultExecutorHome(),
 		PoolSize:     int(float64(runtime.NumCPU()) * 2), // 1.5x CPU cores
-		QueueSize:    1024 * 64,
+		QueueSize:    1024 * 512,
 	}
 
 	// Override with environment variables

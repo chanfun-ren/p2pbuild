@@ -151,7 +151,6 @@ func ExecCommand(ctx context.Context, cmd *Command) CommandResult {
 	}
 
 	// 达到最大重试次数
-	// !TODO: debug 临时使用 Fatalw, 后续改为 warning
 	log.Warnw("Command failed after maximum retries", "maxRetries", maxRetries,
 		"lastExitCode", lastResult.ExitCode, "lastError", lastResult.Error, "command", cmd)
 

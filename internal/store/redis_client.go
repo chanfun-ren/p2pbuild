@@ -30,9 +30,9 @@ func NewRedisClient(config KVStoreConfig) (KVStoreClient, error) {
 	// }
 	options := &redis.Options{
 		Addr:         addr,
-		DialTimeout:  10 * time.Second, // 建立新连接超时
-		ReadTimeout:  10 * time.Second, // 单次读操作超时
-		WriteTimeout: 10 * time.Second, // 单次写操作超时
+		DialTimeout:  30 * time.Second, // 建立新连接超时
+		ReadTimeout:  30 * time.Second, // 单次读操作超时
+		WriteTimeout: 30 * time.Second, // 单次写操作超时
 
 		PoolSize:     100,             // 并发 goroutine 数量上限
 		MinIdleConns: 4,               // 保留一定数量的闲置连接

@@ -151,7 +151,7 @@ func (l *LocalProjectRunner) RunTask(task *model.Task) model.TaskResult {
 
 	timeout := 2 * time.Minute
 	if l.isLocalExecutor {
-		timeout = 10 * time.Minute
+		timeout = 15 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -458,7 +458,8 @@ func (r *TaskBufferedRunner) RunTask(task *model.Task) model.TaskResult {
 
 func (r *TaskBufferedRunner) Cleanup(ctx context.Context) error {
 	err := r.baseRunner.Cleanup(ctx)
-	r.KVStore.FlushDB(ctx)
+	// 清理 Executor/ProjectRunner 不应该清理掉和 proxy 绑定的 KVStore
+	// r.KVStore.FlushDB(ctx)
 	log.Infow("ProjectRunner free...", "ReceivedtaskCount", r.ReceivedtaskCount, "PreemptedTaskCount", r.PreemptedTaskCount.Load())
 	r.Stop()
 	return err
@@ -636,7 +637,7 @@ func (r *TaskBufferedRunner) worker_busy_wait(workerID string) {
 					StatusCode: api.RC_EXECUTOR_RESOURCE_NOT_FOUND,
 					Message:    "task not found",
 				}
-				log.Errorw("Task not found", "taskKey", task.TaskKey, "workerID", workerID)
+				log.Fatalw("Task not found", "taskKey", task.TaskKey, "workerID", workerID)
 			case 1: // 任务状态不匹配
 				task.ResultChan <- model.TaskResult{
 					StatusCode: api.RC_EXECUTOR_TASK_ALREADY_CLAIMED,

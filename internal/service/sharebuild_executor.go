@@ -44,9 +44,11 @@ func (s *ShareBuildExecutorService) PrepareLocalEnv(ctx context.Context, req *ap
 	}
 	redisConfig := store.KVStoreConfig{
 		Type: "redis",
-		Host: config.GlobalConfig.StoreHost,
+		Host: project.NinjaHost,
 		Port: config.GlobalConfig.StorePort,
 	}
+	log.Infow("Creating KVStoreClient for project", "project", project.String(), "redisConfig", redisConfig)
+
 	redisCli, err := store.GetKVStoreFactory().CreateKVStoreClient(redisConfig)
 	if err != nil {
 		log.Errorw("failed to create KVStoreClient", "redisConfig", redisConfig, "err", err)
